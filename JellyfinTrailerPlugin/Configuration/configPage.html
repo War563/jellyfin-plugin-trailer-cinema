@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8" />
+    <title>Trailer Cinema</title>
+</head>
+<body>
+<div id="TrailerCinemaConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
+     data-require="emby-input,emby-button,emby-checkbox,emby-select">
+
+    <div data-role="content">
+        <div class="content-primary">
+
+            <form id="TrailerCinemaConfigForm">
+
+                <div class="sectionTitleContainer flex align-items-center">
+                    <h2 class="sectionTitle">Trailer Cinema</h2>
+                </div>
+
+                <p>Reproduce trailers automáticamente antes de cada película, como en el cine.</p>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="YouTubeChannelId">ID del canal de YouTube</label>
+                    <input id="YouTubeChannelId" name="YouTubeChannelId" type="text" is="emby-input"
+                           placeholder="UCxxxxxxxxxxxxxxxxxxxxxxxx" />
+                    <div class="fieldDescription">El identificador del canal (empieza por UC…).</div>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="ApiKey">API Key de YouTube Data v3</label>
+                    <input id="ApiKey" name="ApiKey" type="password" is="emby-input" />
+                    <div class="fieldDescription">Obtenida en Google Cloud Console.</div>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="TitleFilter">Filtro de título</label>
+                    <input id="TitleFilter" name="TitleFilter" type="text" is="emby-input" placeholder="castellano" />
+                    <div class="fieldDescription">Solo se incluyen vídeos cuyo título contenga este texto (sin distinción de mayúsculas).</div>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="TrailerCount">Trailers por película</label>
+                    <input id="TrailerCount" name="TrailerCount" type="number" is="emby-input" min="1" max="10" />
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="PoolSize">Tamaño del pool</label>
+                    <input id="PoolSize" name="PoolSize" type="number" is="emby-input" min="5" max="100" />
+                    <div class="fieldDescription">Cuántos trailers se mantienen en memoria para servir sin espera.</div>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="MinDurationSeconds">Duración mínima (segundos)</label>
+                    <input id="MinDurationSeconds" name="MinDurationSeconds" type="number" is="emby-input" min="30" />
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="MaxDurationSeconds">Duración máxima (segundos)</label>
+                    <input id="MaxDurationSeconds" name="MaxDurationSeconds" type="number" is="emby-input" min="60" />
+                </div>
+
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label class="emby-checkbox-label">
+                        <input id="Shuffle" name="Shuffle" type="checkbox" is="emby-checkbox" />
+                        <span>Orden aleatorio</span>
+                    </label>
+                    <div class="fieldDescription checkboxFieldDescription">Mezcla el pool antes de elegir los trailers.</div>
+                </div>
+
+                <div>
+                    <button is="emby-button" type="submit" class="raised button-submit block">
+                        <span>Guardar</span>
+                    </button>
+                </div>
+
+            </form>
+
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        var TrailerCinemaConfig = {
+            pluginId: "a8b0c1d2-e3f4-5678-90ab-cdef12345678",
+
+            pageShow: function () {
+                Dashboard.showLoadingMsg();
+                ApiClient.getPluginConfiguration(TrailerCinemaConfig.pluginId).then(function (config) {
+                    document.querySelector('#YouTubeChannelId').value = config.YouTubeChannelId || '';
+                    document.querySelector('#ApiKey').value = config.ApiKey || '';
+                    document.querySelector('#TitleFilter').value = config.TitleFilter || 'castellano';
+                    document.querySelector('#TrailerCount').value = config.TrailerCount || 5;
+                    document.querySelector('#PoolSize').value = config.PoolSize || 20;
+                    document.querySelector('#MinDurationSeconds').value = config.MinDurationSeconds || 60;
+                    document.querySelector('#MaxDurationSeconds').value = config.MaxDurationSeconds || 300;
+                    document.querySelector('#Shuffle').checked = config.Shuffle !== false;
+                    Dashboard.hideLoadingMsg();
+                });
+            },
+
+            formSubmit: function (e) {
+                e.preventDefault();
+                Dashboard.showLoadingMsg();
+                ApiClient.getPluginConfiguration(TrailerCinemaConfig.pluginId).then(function (config) {
+                    config.YouTubeChannelId = document.querySelector('#YouTubeChannelId').value;
+                    config.ApiKey = document.querySelector('#ApiKey').value;
+                    config.TitleFilter = document.querySelector('#TitleFilter').value;
+                    config.TrailerCount = parseInt(document.querySelector('#TrailerCount').value, 10);
+                    config.PoolSize = parseInt(document.querySelector('#PoolSize').value, 10);
+                    config.MinDurationSeconds = parseInt(document.querySelector('#MinDurationSeconds').value, 10);
+                    config.MaxDurationSeconds = parseInt(document.querySelector('#MaxDurationSeconds').value, 10);
+                    config.Shuffle = document.querySelector('#Shuffle').checked;
+                    ApiClient.updatePluginConfiguration(TrailerCinemaConfig.pluginId, config).then(function () {
+                        Dashboard.processPluginConfigurationUpdateResult();
+                    });
+                });
+            }
+        };
+
+        document.querySelector('#TrailerCinemaConfigPage').addEventListener('pageshow', TrailerCinemaConfig.pageShow);
+        document.querySelector('#TrailerCinemaConfigForm').addEventListener('submit', TrailerCinemaConfig.formSubmit);
+    </script>
+
+</div>
+</body>
+</html>

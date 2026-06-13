@@ -1,0 +1,12 @@
+[
+  {
+    "category": "General",
+    "guid": "a8b0c1d2-e3f4-5678-90ab-cdef12345678",
+    "imageUrl": "",
+    "name": "Trailer Cinema",
+    "description": "Reproduce trailers en castellano antes de cada película, a modo de cine.",
+    "overview": "Conecta con un canal de YouTube, obtiene los trailers más recientes y los reproduce automáticamente antes de cada película. Configurable: canal, número de trailers, filtro de título, duración mínima/máxima y orden aleatorio.",
+    "owner": "War563",
+    "versions": []
+  }
+]

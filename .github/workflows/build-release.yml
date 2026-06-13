@@ -1,0 +1,124 @@
+name: Build and Publish Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Need full history to commit manifest update back
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '6.0.x'
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"          # e.g. v1.2.3
+          VER="${TAG#v}"                    # strip leading 'v' → 1.2.3
+          DOTNET_VER="${VER}.0"             # Jellyfin expects 4-part → 1.2.3.0
+          echo "tag=$TAG"         >> $GITHUB_OUTPUT
+          echo "version=$VER"     >> $GITHUB_OUTPUT
+          echo "dotnet=$DOTNET_VER" >> $GITHUB_OUTPUT
+
+      - name: Restore & Publish
+        run: |
+          dotnet publish \
+            JellyfinTrailerPlugin/JellyfinTrailerPlugin.csproj \
+            -c Release \
+            -o publish/ \
+            /p:Version=${{ steps.version.outputs.dotnet }}
+
+      - name: Create plugin zip
+        run: |
+          cd publish
+          ZIP_NAME="JellyfinTrailerPlugin_${{ steps.version.outputs.version }}.zip"
+          # Only include the plugin DLL and its direct dependencies
+          zip -j "../${ZIP_NAME}" JellyfinTrailerPlugin.dll
+          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+
+      - name: Compute MD5 checksum
+        id: checksum
+        run: |
+          MD5=$(md5sum "$ZIP_NAME" | awk '{print $1}')
+          echo "md5=$MD5" >> $GITHUB_OUTPUT
+
+      - name: Update manifest.json
+        run: |
+          python3 - <<'EOF'
+          import json, os, datetime
+
+          version   = os.environ["VERSION"]
+          dotnet_v  = os.environ["DOTNET_VER"]
+          checksum  = os.environ["MD5"]
+          repo      = os.environ["GITHUB_REPOSITORY"]
+          zip_name  = os.environ["ZIP_NAME"]
+          tag       = os.environ["TAG"]
+
+          source_url = f"https://github.com/{repo}/releases/download/{tag}/{zip_name}"
+          timestamp  = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+          with open("manifest.json") as f:
+              manifest = json.load(f)
+
+          new_entry = {
+              "version":   dotnet_v,
+              "changelog": f"Release {version}.",
+              "targetAbi": "10.8.0.0",
+              "sourceUrl": source_url,
+              "checksum":  checksum,
+              "timestamp": timestamp
+          }
+
+          # Prepend so latest version is first
+          manifest[0]["versions"].insert(0, new_entry)
+
+          with open("manifest.json", "w") as f:
+              json.dump(manifest, f, indent=2)
+              f.write("\n")
+
+          print(f"manifest.json updated with version {dotnet_v}")
+          EOF
+        env:
+          VERSION:    ${{ steps.version.outputs.version }}
+          DOTNET_VER: ${{ steps.version.outputs.dotnet }}
+          MD5:        ${{ steps.checksum.outputs.md5 }}
+          ZIP_NAME:   ${{ env.ZIP_NAME }}
+          TAG:        ${{ steps.version.outputs.tag }}
+
+      - name: Commit updated manifest
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add manifest.json
+          git commit -m "chore: update manifest for ${{ steps.version.outputs.tag }}"
+          git push origin HEAD:main
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Trailer Cinema ${{ steps.version.outputs.version }}
+          body: |
+            ## Trailer Cinema ${{ steps.version.outputs.version }}
+
+            ### Instalación
+            Añade el siguiente repositorio en Jellyfin → Dashboard → Plugins → Repositorios:
+            ```
+            https://raw.githubusercontent.com/${{ github.repository }}/main/manifest.json
+            ```
+          files: ${{ env.ZIP_NAME }}
+          fail_on_unmatched_files: true
