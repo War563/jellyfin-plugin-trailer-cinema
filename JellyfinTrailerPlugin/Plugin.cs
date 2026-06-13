@@ -1,8 +1,13 @@
 using JellyfinTrailerPlugin.Configuration;
+using JellyfinTrailerPlugin.Services;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
+using MediaBrowser.Controller;
+using MediaBrowser.Controller.Plugins;
 using MediaBrowser.Model.Plugins;
 using MediaBrowser.Model.Serialization;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace JellyfinTrailerPlugin;
 
@@ -27,5 +32,42 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
             Name = Name,
             EmbeddedResourcePath = $"{GetType().Namespace}.Configuration.configPage.html"
         };
+    }
+}
+
+public class ServiceRegistrator : IPluginServiceRegistrator
+{
+    public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
+    {
+        serviceCollection.AddSingleton<YouTubeService>();
+        serviceCollection.AddSingleton<YtDlpService>();
+        serviceCollection.AddSingleton<TrailerCacheService>();
+        serviceCollection.AddSingleton<PlaybackHookService>();
+        serviceCollection.AddHostedService<PluginStartupService>();
+    }
+}
+
+internal class PluginStartupService : IHostedService
+{
+    private readonly PlaybackHookService _hook;
+    private readonly TrailerCacheService _cache;
+
+    public PluginStartupService(PlaybackHookService hook, TrailerCacheService cache)
+    {
+        _hook  = hook;
+        _cache = cache;
+    }
+
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        var config = Plugin.Instance?.Configuration;
+        if (config is not null)
+            await _cache.RefreshAsync(config, cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        _hook.Dispose();
+        return Task.CompletedTask;
     }
 }
