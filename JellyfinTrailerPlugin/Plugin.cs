@@ -1,5 +1,6 @@
 using JellyfinTrailerPlugin.Configuration;
 using JellyfinTrailerPlugin.Services;
+using MediaBrowser.Common;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Model.Plugins;
@@ -36,7 +37,7 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 /// <summary>Registers all plugin services into the Jellyfin DI container.</summary>
 public class ServiceRegistrator : IPluginServiceRegistrator
 {
-    public void RegisterServices(IServiceCollection serviceCollection)
+    public void RegisterServices(IServiceCollection serviceCollection, IApplicationHost applicationHost)
     {
         serviceCollection.AddSingleton<YouTubeService>();
         serviceCollection.AddSingleton<YtDlpService>();

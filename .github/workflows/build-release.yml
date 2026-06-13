@@ -22,7 +22,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '6.0.x'
+          dotnet-version: '8.0.x'
 
       - name: Extract version from tag
         id: version
@@ -77,7 +77,7 @@ jobs:
           new_entry = {
               "version":   dotnet_v,
               "changelog": f"Release {version}.",
-              "targetAbi": "10.8.0.0",
+              "targetAbi": "10.9.0.0",
               "sourceUrl": source_url,
               "checksum":  checksum,
               "timestamp": timestamp
