@@ -46,8 +46,12 @@ jobs:
         run: |
           cd publish
           ZIP_NAME="JellyfinTrailerPlugin_${{ steps.version.outputs.version }}.zip"
-          # Only include the plugin DLL and its direct dependencies
-          zip -j "../${ZIP_NAME}" JellyfinTrailerPlugin.dll
+          # Include the plugin DLL + all non-Jellyfin/non-framework dependencies.
+          # Jellyfin already provides MediaBrowser.* and Microsoft.Extensions.* in its process.
+          # Third-party packages (Google APIs, etc.) must be bundled.
+          zip -j "../${ZIP_NAME}" \
+            JellyfinTrailerPlugin.dll \
+            $(ls *.dll | grep -Ev "^(MediaBrowser|Jellyfin|Microsoft\.|System\.|netstandard)")
           echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
 
       - name: Compute MD5 checksum
