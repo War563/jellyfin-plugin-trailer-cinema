@@ -11,6 +11,7 @@ public class TrailerCacheService
 {
     private readonly YouTubeService _youTubeService;
     private readonly YtDlpService _ytDlpService;
+    private readonly TrailerLibraryService _libraryService;
     private readonly ILogger<TrailerCacheService> _logger;
 
     private readonly SemaphoreSlim _lock = new(1, 1);
@@ -20,11 +21,13 @@ public class TrailerCacheService
     public TrailerCacheService(
         YouTubeService youTubeService,
         YtDlpService ytDlpService,
+        TrailerLibraryService libraryService,
         ILogger<TrailerCacheService> logger)
     {
-        _youTubeService = youTubeService;
-        _ytDlpService = ytDlpService;
-        _logger = logger;
+        _youTubeService  = youTubeService;
+        _ytDlpService    = ytDlpService;
+        _libraryService  = libraryService;
+        _logger          = logger;
     }
 
     public int PoolCount => _pool.Count;
@@ -43,6 +46,10 @@ public class TrailerCacheService
             var valid = fresh.Where(t => !string.IsNullOrEmpty(t.StreamUrl)).ToList();
             _pool = valid;
             _lastRefresh = DateTime.UtcNow;
+
+            // Create/reuse Jellyfin library items so PlayCommand can reference them by Guid
+            var serverBaseUrl = Plugin.Instance?.Configuration.ServerBaseUrl ?? "http://localhost:8096";
+            _libraryService.SyncItems(valid, serverBaseUrl);
 
             _logger.LogInformation("TrailerCinema: pool refreshed — {Valid}/{Total} trailers with valid URLs.",
                 valid.Count, fresh.Count);

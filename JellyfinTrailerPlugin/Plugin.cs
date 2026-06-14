@@ -1,10 +1,8 @@
-using JellyfinTrailerPlugin.Channels;
 using JellyfinTrailerPlugin.Configuration;
 using JellyfinTrailerPlugin.Services;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Controller;
-using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.Plugins;
 using MediaBrowser.Model.Plugins;
 using MediaBrowser.Model.Serialization;
@@ -43,13 +41,8 @@ public class ServiceRegistrator : IPluginServiceRegistrator
     {
         serviceCollection.AddSingleton<YouTubeService>();
         serviceCollection.AddSingleton<YtDlpService>();
+        serviceCollection.AddSingleton<TrailerLibraryService>();
         serviceCollection.AddSingleton<TrailerCacheService>();
-
-        // TrailerChannel is registered both as concrete type (for direct injection)
-        // and as IChannel so Jellyfin's ChannelManager discovers it automatically.
-        serviceCollection.AddSingleton<TrailerChannel>();
-        serviceCollection.AddSingleton<IChannel>(sp => sp.GetRequiredService<TrailerChannel>());
-
         serviceCollection.AddSingleton<PlaybackHookService>();
         serviceCollection.AddHostedService<PluginStartupService>();
     }

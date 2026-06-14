@@ -27,4 +27,10 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>Maximum video duration in seconds (skip feature-length uploads).</summary>
     public int MaxDurationSeconds { get; set; } = 300;
+
+    /// <summary>
+    /// Base URL the Jellyfin server uses for internal API calls.
+    /// Used to construct the trailer stream proxy URL.
+    /// </summary>
+    public string ServerBaseUrl { get; set; } = "http://localhost:8096";
 }

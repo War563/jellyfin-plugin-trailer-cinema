@@ -11,10 +11,36 @@ namespace JellyfinTrailerPlugin.Api;
 public class TrailerController : ControllerBase
 {
     private readonly TrailerCacheService _cache;
+    private readonly YtDlpService _ytDlp;
 
-    public TrailerController(TrailerCacheService cache)
+    public TrailerController(TrailerCacheService cache, YtDlpService ytDlp)
     {
         _cache = cache;
+        _ytDlp = ytDlp;
+    }
+
+    /// <summary>
+    /// Proxy endpoint: redirects to the actual yt-dlp stream URL for a trailer.
+    /// Video library items use this URL as their Path so Jellyfin can play them.
+    /// </summary>
+    [HttpGet("Stream/{videoId}")]
+    [AllowAnonymous]
+    [ProducesResponseType(StatusCodes.Status302Found)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> StreamTrailer(string videoId, CancellationToken cancellationToken)
+    {
+        var trailer = _cache.GetAllCached().FirstOrDefault(t => t.VideoId == videoId);
+        if (trailer is null)
+            return NotFound();
+
+        var url = trailer.StreamUrl;
+        if (string.IsNullOrEmpty(url) || trailer.IsExpired)
+            url = await _ytDlp.ResolveOneAsync(videoId, cancellationToken).ConfigureAwait(false);
+
+        if (string.IsNullOrEmpty(url))
+            return NotFound();
+
+        return Redirect(url);
     }
 
     [HttpGet("Status")]

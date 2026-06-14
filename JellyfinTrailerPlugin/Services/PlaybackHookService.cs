@@ -1,6 +1,3 @@
-using JellyfinTrailerPlugin.Channels;
-using MediaBrowser.Controller.Channels;
-using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Session;
@@ -14,10 +11,9 @@ public class PlaybackHookService : IDisposable
     private readonly ISessionManager _sessionManager;
     private readonly ILibraryManager _libraryManager;
     private readonly TrailerCacheService _cache;
-    private readonly TrailerChannel _channel;
     private readonly ILogger<PlaybackHookService> _logger;
 
-    // Movies we queued after trailers: skip re-injection when they start playing.
+    // Movies we queued after trailers — skip re-injection when they start playing.
     private readonly HashSet<Guid> _suppressedMovies = new HashSet<Guid>();
     private readonly object _lock = new();
 
@@ -25,13 +21,11 @@ public class PlaybackHookService : IDisposable
         ISessionManager sessionManager,
         ILibraryManager libraryManager,
         TrailerCacheService cache,
-        TrailerChannel channel,
         ILogger<PlaybackHookService> logger)
     {
         _sessionManager = sessionManager;
         _libraryManager = libraryManager;
         _cache          = cache;
-        _channel        = channel;
         _logger         = logger;
 
         _sessionManager.PlaybackStart += OnPlaybackStart;
@@ -43,7 +37,7 @@ public class PlaybackHookService : IDisposable
 
         lock (_lock)
         {
-            // Movie was queued by us after trailers — let it play untouched.
+            // Movie was queued by us after trailers — let it play.
             if (_suppressedMovies.Remove(e.Item.Id))
                 return;
         }
@@ -51,7 +45,7 @@ public class PlaybackHookService : IDisposable
         _ = Task.Run(() => InjectTrailersAsync(e.Session, e.Item));
     }
 
-    private async Task InjectTrailersAsync(SessionInfo session, BaseItem movie)
+    private async Task InjectTrailersAsync(SessionInfo session, MediaBrowser.Controller.Entities.BaseItem movie)
     {
         try
         {
@@ -63,32 +57,30 @@ public class PlaybackHookService : IDisposable
 
             if (trailers.Count == 0)
             {
-                _logger.LogInformation("TrailerCinema: pool empty — skipping injection for session {S}.", session.Id);
+                _logger.LogInformation("TrailerCinema: pool empty — skipping for session {S}.", session.Id);
                 return;
             }
 
-            // Compute channel item IDs and verify they exist in the DB.
-            // Items are created on first Jellyfin startup or when the channel is browsed.
+            // Only use trailers whose library item was created successfully
             var trailerIds = trailers
-                .Select(t => _channel.GetJellyfinItemId(t.VideoId))
-                .Where(id => _libraryManager.GetItemById(id) != null)
+                .Where(t => t.JellyfinItemId != Guid.Empty
+                         && _libraryManager.GetItemById(t.JellyfinItemId) is not null)
+                .Select(t => t.JellyfinItemId)
                 .ToList();
 
             if (trailerIds.Count == 0)
             {
-                _logger.LogWarning(
-                    "TrailerCinema: channel items not in DB yet. " +
-                    "Open Channels → Trailer Cinema in Jellyfin once to initialize them.");
+                _logger.LogWarning("TrailerCinema: no library items found in DB yet — waiting for next refresh.");
                 return;
             }
 
-            // Mark the movie suppressed so when it plays after trailers we don't loop.
+            // Suppress re-injection when the movie starts after the trailers
             lock (_lock)
             {
                 _suppressedMovies.Add(movie.Id);
             }
 
-            // Stop what is currently playing
+            // Stop current playback
             await _sessionManager.SendPlaystateCommand(
                 session.Id,
                 session.Id,
@@ -97,7 +89,7 @@ public class PlaybackHookService : IDisposable
 
             await Task.Delay(800).ConfigureAwait(false);
 
-            // Single PlayNow with full playlist: trailers + movie
+            // Single PlayNow: all trailers followed by the original movie
             var allIds = trailerIds.Append(movie.Id).ToArray();
 
             await _sessionManager.SendPlayCommand(
@@ -119,7 +111,7 @@ public class PlaybackHookService : IDisposable
         {
             _logger.LogError(ex, "TrailerCinema: error injecting trailers for session {S}.", session.Id);
 
-            // Remove suppression so the movie plays normally if we failed
+            // Allow movie to play normally if injection failed
             lock (_lock)
             {
                 _suppressedMovies.Remove(movie.Id);
