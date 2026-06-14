@@ -19,6 +19,10 @@ public class YtDlpService
         await Task.WhenAll(tasks);
     }
 
+    /// <summary>Resolves the direct stream URL for a single video ID.</summary>
+    public Task<string?> ResolveOneAsync(string videoId, CancellationToken ct)
+        => RunYtDlpAsync(videoId, ct);
+
     private async Task ResolveOneAsync(TrailerInfo trailer, CancellationToken ct)
     {
         await _semaphore.WaitAsync(ct);
