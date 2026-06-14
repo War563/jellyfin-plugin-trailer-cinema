@@ -13,8 +13,10 @@ public class PlaybackHookService : IDisposable
     private readonly TrailerCacheService _cache;
     private readonly ILogger<PlaybackHookService> _logger;
 
-    // Movies we queued after trailers — skip re-injection when they start playing.
-    private readonly HashSet<Guid> _suppressedMovies = new HashSet<Guid>();
+    // Tracks (sessionId, movieId) pairs that already received trailer injection.
+    // Keyed in OnPlaybackStart (before Task.Run) to prevent double-injection races.
+    // Cleared on injection failure so the user can retry.
+    private readonly HashSet<(string, Guid)> _injectedSessions = new();
     private readonly object _lock = new();
 
     public PlaybackHookService(
@@ -29,6 +31,16 @@ public class PlaybackHookService : IDisposable
         _logger         = logger;
 
         _sessionManager.PlaybackStart += OnPlaybackStart;
+        _sessionManager.SessionEnded  += OnSessionEnded;
+    }
+
+    private void OnSessionEnded(object? sender, SessionEventArgs e)
+    {
+        // Clean up entries for the ended session to avoid unbounded growth.
+        lock (_lock)
+        {
+            _injectedSessions.RemoveWhere(k => k.Item1 == e.SessionInfo.Id);
+        }
     }
 
     private void OnPlaybackStart(object? sender, PlaybackProgressEventArgs e)
@@ -37,8 +49,8 @@ public class PlaybackHookService : IDisposable
 
         lock (_lock)
         {
-            // Movie was queued by us after trailers — let it play.
-            if (_suppressedMovies.Remove(e.Item.Id))
+            // Already injected trailers for this movie in this session — suppress.
+            if (!_injectedSessions.Add((e.Session.Id, e.Item.Id)))
                 return;
         }
 
@@ -72,12 +84,6 @@ public class PlaybackHookService : IDisposable
             {
                 _logger.LogWarning("TrailerCinema: no library items found in DB yet — waiting for next refresh.");
                 return;
-            }
-
-            // Suppress re-injection when the movie starts after the trailers
-            lock (_lock)
-            {
-                _suppressedMovies.Add(movie.Id);
             }
 
             // Stop current playback
@@ -114,7 +120,7 @@ public class PlaybackHookService : IDisposable
             // Allow movie to play normally if injection failed
             lock (_lock)
             {
-                _suppressedMovies.Remove(movie.Id);
+                _injectedSessions.Remove((session.Id, movie.Id));
             }
         }
     }
@@ -122,6 +128,7 @@ public class PlaybackHookService : IDisposable
     public void Dispose()
     {
         _sessionManager.PlaybackStart -= OnPlaybackStart;
+        _sessionManager.SessionEnded  -= OnSessionEnded;
         GC.SuppressFinalize(this);
     }
 }
