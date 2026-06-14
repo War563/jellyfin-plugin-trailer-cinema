@@ -9,6 +9,14 @@
     "owner": "War563",
     "versions": [
       {
+        "version": "1.1.12.0",
+        "changelog": "Release 1.1.12.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/War563/jellyfin-plugin-trailer-cinema/releases/download/v1.1.12/JellyfinTrailerPlugin_1.1.12.zip",
+        "checksum": "c12cc1a88cba8a5cba575ed1b91adc13",
+        "timestamp": "2026-06-14T04:21:07Z"
+      },
+      {
         "version": "1.1.11.0",
         "changelog": "Release 1.1.11.",
         "targetAbi": "10.11.0.0",
