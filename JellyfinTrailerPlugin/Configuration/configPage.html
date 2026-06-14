@@ -87,7 +87,7 @@
                 ApiClient.getPluginConfiguration(TrailerCinemaConfig.pluginId).then(function (config) {
                     document.querySelector('#YouTubeChannelId').value = config.YouTubeChannelId || '';
                     document.querySelector('#ApiKey').value = config.ApiKey || '';
-                    document.querySelector('#TitleFilter').value = config.TitleFilter || 'castellano';
+                    document.querySelector('#TitleFilter').value = config.TitleFilter ?? '';
                     document.querySelector('#TrailerCount').value = config.TrailerCount || 5;
                     document.querySelector('#PoolSize').value = config.PoolSize || 20;
                     document.querySelector('#MinDurationSeconds').value = config.MinDurationSeconds || 60;
