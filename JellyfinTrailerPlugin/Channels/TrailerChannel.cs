@@ -1,6 +1,7 @@
 using JellyfinTrailerPlugin.Services;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Channels;
 using MediaBrowser.Model.Drawing;
 using MediaBrowser.Model.Dto;
