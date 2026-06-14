@@ -33,4 +33,10 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Used to construct the trailer stream proxy URL.
     /// </summary>
     public string ServerBaseUrl { get; set; } = "http://localhost:8096";
+
+    /// <summary>
+    /// Full path to the yt-dlp binary. Leave empty to auto-detect (system PATH)
+    /// or auto-download into the plugin data directory.
+    /// </summary>
+    public string YtDlpPath { get; set; } = string.Empty;
 }
