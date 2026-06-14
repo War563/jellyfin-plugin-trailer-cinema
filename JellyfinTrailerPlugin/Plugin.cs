@@ -5,7 +5,6 @@ using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Channels;
-using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Plugins;
 using MediaBrowser.Model.Plugins;
 using MediaBrowser.Model.Serialization;
@@ -60,46 +59,18 @@ internal class PluginStartupService : IHostedService
 {
     private readonly PlaybackHookService _hook;
     private readonly TrailerCacheService _cache;
-    private readonly IChannelManager _channelManager;
-    private readonly ILibraryManager _libraryManager;
 
-    public PluginStartupService(
-        PlaybackHookService hook,
-        TrailerCacheService cache,
-        IChannelManager channelManager,
-        ILibraryManager libraryManager)
+    public PluginStartupService(PlaybackHookService hook, TrailerCacheService cache)
     {
-        _hook           = hook;
-        _cache          = cache;
-        _channelManager = channelManager;
-        _libraryManager = libraryManager;
+        _hook  = hook;
+        _cache = cache;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         var config = Plugin.Instance?.Configuration;
-        if (config is null) return;
-
-        // 1. Fill the pool so GetChannelItems() has real data when called below.
-        await _cache.RefreshAsync(config, cancellationToken).ConfigureAwait(false);
-
-        // 2. Pre-populate channel item entries in Jellyfin's DB so their Guids
-        //    exist before the first PlayCommand uses them.
-        try
-        {
-            var channelId = _libraryManager.GetNewItemId(
-                "Channel" + "Trailer Cinema",
-                typeof(Channel));
-
-            await _channelManager.GetChannelItemsInternal(
-                new InternalChannelItemQuery { ChannelId = channelId },
-                null,
-                cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception)
-        {
-            // Non-fatal: items will be created lazily on first channel browse.
-        }
+        if (config is not null)
+            await _cache.RefreshAsync(config, cancellationToken).ConfigureAwait(false);
     }
 
     public Task StopAsync(CancellationToken cancellationToken)

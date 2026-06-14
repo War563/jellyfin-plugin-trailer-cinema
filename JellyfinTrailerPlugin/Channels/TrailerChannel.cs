@@ -47,8 +47,8 @@ public class TrailerChannel : IChannel, IRequiresMediaInfoCallback
 
     public InternalChannelFeatures GetChannelFeatures() => new InternalChannelFeatures
     {
-        ContentTypes = new[] { ChannelMediaContentType.Movie },
-        MediaTypes = new[] { ChannelMediaType.Video }
+        ContentTypes = new List<ChannelMediaContentType> { ChannelMediaContentType.Movie },
+        MediaTypes   = new List<ChannelMediaType>        { ChannelMediaType.Video }
     };
 
     public IEnumerable<ImageType> GetSupportedChannelImages()
