@@ -19,6 +19,9 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Case-insensitive substring that video titles must contain.</summary>
     public string TitleFilter { get; set; } = "castellano";
 
+    /// <summary>Comma-separated words — videos whose title contains any of them are excluded.</summary>
+    public string TitleExclude { get; set; } = string.Empty;
+
     /// <summary>Shuffle the pool before picking trailers.</summary>
     public bool Shuffle { get; set; } = true;
 

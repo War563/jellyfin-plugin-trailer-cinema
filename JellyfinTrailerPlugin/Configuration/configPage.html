@@ -39,6 +39,12 @@
                 </div>
 
                 <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="TitleExclude">Palabras excluidas del título</label>
+                    <input id="TitleExclude" name="TitleExclude" type="text" is="emby-input" placeholder="latino, doblado" />
+                    <div class="fieldDescription">Vídeos cuyo título contenga alguna de estas palabras (separadas por comas) serán ignorados.</div>
+                </div>
+
+                <div class="inputContainer">
                     <label class="inputLabel inputLabelUnfocused" for="TrailerCount">Trailers por película</label>
                     <input id="TrailerCount" name="TrailerCount" type="number" is="emby-input" min="1" max="10" />
                 </div>
@@ -102,6 +108,7 @@
                     document.querySelector('#YouTubeChannelId').value = config.YouTubeChannelId || '';
                     document.querySelector('#ApiKey').value = config.ApiKey || '';
                     document.querySelector('#TitleFilter').value = config.TitleFilter ?? '';
+                    document.querySelector('#TitleExclude').value = config.TitleExclude ?? '';
                     document.querySelector('#TrailerCount').value = config.TrailerCount || 5;
                     document.querySelector('#PoolSize').value = config.PoolSize || 20;
                     document.querySelector('#MinDurationSeconds').value = config.MinDurationSeconds || 60;
@@ -120,6 +127,7 @@
                     config.YouTubeChannelId = document.querySelector('#YouTubeChannelId').value;
                     config.ApiKey = document.querySelector('#ApiKey').value;
                     config.TitleFilter = document.querySelector('#TitleFilter').value;
+                    config.TitleExclude = document.querySelector('#TitleExclude').value;
                     config.TrailerCount = parseInt(document.querySelector('#TrailerCount').value, 10);
                     config.PoolSize = parseInt(document.querySelector('#PoolSize').value, 10);
                     config.MinDurationSeconds = parseInt(document.querySelector('#MinDurationSeconds').value, 10);

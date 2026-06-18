@@ -60,11 +60,17 @@ public class YouTubeService
             videoRequest.Id = string.Join(",", videoIds);
             var videoResponse = await videoRequest.ExecuteAsync(ct);
 
+            var excludeWords = (config.TitleExclude ?? string.Empty)
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
             foreach (var video in videoResponse.Items)
             {
                 var title = video.Snippet?.Title ?? string.Empty;
 
                 if (!title.Contains(config.TitleFilter, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (excludeWords.Any(w => title.Contains(w, StringComparison.OrdinalIgnoreCase)))
                     continue;
 
                 var duration = ParseIso8601Duration(video.ContentDetails?.Duration);
