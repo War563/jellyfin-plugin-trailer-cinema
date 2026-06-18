@@ -82,27 +82,35 @@ public class PlaybackHookService : IDisposable
             var config = Plugin.Instance?.Configuration;
             if (config is null) return;
 
-            var trailers = await _cache.GetTrailersAsync(config, config.TrailerCount, CancellationToken.None)
+            // Fetch the full pool so we can filter and still hit the configured count.
+            var allTrailers = await _cache.GetTrailersAsync(config, config.PoolSize, CancellationToken.None)
                 .ConfigureAwait(false);
 
-            if (trailers.Count == 0)
+            if (allTrailers.Count == 0)
             {
                 _logger.LogInformation("TrailerCinema: pool empty — skipping for session {S}.", session.Id);
                 return;
             }
 
-            // Only use trailers whose library item was created successfully
-            var trailerIds = trailers
+            // Keep only trailers whose library item exists, then shuffle, then cap at TrailerCount.
+            var available = allTrailers
                 .Where(t => t.JellyfinItemId != Guid.Empty
                          && _libraryManager.GetItemById(t.JellyfinItemId) is not null)
-                .Select(t => t.JellyfinItemId)
                 .ToList();
 
-            if (trailerIds.Count == 0)
+            if (available.Count == 0)
             {
                 _logger.LogWarning("TrailerCinema: no library items found in DB yet — waiting for next refresh.");
                 return;
             }
+
+            if (config.Shuffle)
+                available = available.OrderBy(_ => Random.Shared.Next()).ToList();
+
+            var trailerIds = available
+                .Select(t => t.JellyfinItemId)
+                .Take(config.TrailerCount)
+                .ToList();
 
             // Stop current playback
             await _sessionManager.SendPlaystateCommand(

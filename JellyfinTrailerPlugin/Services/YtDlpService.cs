@@ -159,10 +159,10 @@ public class YtDlpService
             return null;
         }
 
-        // Use a single combined stream (video+audio in one file) so the redirect URL has audio.
-        // "bestvideo+bestaudio" gives two separate URLs; taking only the first = video-only, no sound.
-        // YouTube format 22 (720p mp4) is the best combined single-file stream available.
-        var args = $"-f \"best[ext=mp4][height<=1080]/best[height<=1080]/best\" -g --no-playlist \"https://www.youtube.com/watch?v={videoId}\"";
+        // Format 22 = YouTube's 720p mp4 with audio+video combined in one file.
+        // "bestvideo+bestaudio" gives TWO separate URLs; taking only the first = video-only, no sound.
+        // Fallbacks ensure we always get a single combined stream even if format 22 is unavailable.
+        var args = $"-f \"22/best[height>=480][ext=mp4]/best[ext=mp4]/best\" -g --no-playlist \"https://www.youtube.com/watch?v={videoId}\"";
 
         var psi = new ProcessStartInfo
         {
