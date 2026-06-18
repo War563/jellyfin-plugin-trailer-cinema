@@ -32,6 +32,12 @@ public class PluginConfiguration : BasePluginConfiguration
     public int MaxDurationSeconds { get; set; } = 300;
 
     /// <summary>
+    /// Base URL the Jellyfin server uses to build the proxy stream URL for trailer items.
+    /// Must be reachable by the clients that play trailers.
+    /// </summary>
+    public string ServerBaseUrl { get; set; } = "http://localhost:8096";
+
+    /// <summary>
     /// Full path to the yt-dlp binary. Leave empty to auto-detect from system PATH
     /// or auto-download into the plugin data directory.
     /// </summary>

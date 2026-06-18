@@ -34,8 +34,8 @@ public class TrailerCacheService
     public DateTime LastRefresh => _lastRefresh;
 
     /// <summary>
-    /// Full pool refresh: fetches titles from YouTube, downloads mp4 files, syncs library items.
-    /// Already-downloaded files are reused (no re-download).
+    /// Full pool refresh: fetches titles from YouTube, downloads mp4 files locally
+    /// (skipping files already on disk), then syncs Jellyfin library items.
     /// </summary>
     public async Task RefreshAsync(PluginConfiguration config, CancellationToken ct)
     {
@@ -58,7 +58,8 @@ public class TrailerCacheService
             _pool = valid;
             _lastRefresh = DateTime.UtcNow;
 
-            _libraryService.SyncItems(valid);
+            var serverBaseUrl = config.ServerBaseUrl;
+            _libraryService.SyncItems(valid, serverBaseUrl);
             CleanupStaleFiles(valid);
 
             _logger.LogInformation(

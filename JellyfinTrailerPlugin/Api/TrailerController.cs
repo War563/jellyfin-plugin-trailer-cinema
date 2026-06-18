@@ -18,8 +18,8 @@ public class TrailerController : ControllerBase
     }
 
     /// <summary>
-    /// Serves the local mp4 file for a trailer (diagnostic / fallback endpoint).
-    /// Normal playback goes through Jellyfin's own file serving using the library item's Path.
+    /// Serves the local mp4 file for a trailer. Library items use this URL as their Path
+    /// so clients direct-play it. The local file is 1080p with merged audio.
     /// </summary>
     [HttpGet("Stream/{videoId}")]
     [AllowAnonymous]

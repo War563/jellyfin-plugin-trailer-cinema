@@ -6,7 +6,9 @@ namespace JellyfinTrailerPlugin.Services;
 
 /// <summary>
 /// Creates and maintains Video items in Jellyfin's library, one per downloaded trailer.
-/// Each item's Path points to the local mp4 file so Jellyfin serves it natively.
+/// Items use an HTTP proxy URL as their Path so Jellyfin treats them as Remote items
+/// and the client direct-plays them. The proxy endpoint (/TrailerCinema/Stream/{id})
+/// serves the locally-downloaded mp4 file, giving 1080p quality with audio.
 /// </summary>
 public class TrailerLibraryService
 {
@@ -25,10 +27,11 @@ public class TrailerLibraryService
         => _libraryManager.GetNewItemId("TrailerCinema:" + videoId, typeof(Video));
 
     /// <summary>
-    /// Ensures one Video library item per trailer exists, pointing at the local mp4 file.
-    /// Sets <see cref="TrailerInfo.JellyfinItemId"/> on each entry.
+    /// Ensures one Video library item per trailer exists.
+    /// The item Path is set to the proxy URL so Jellyfin exposes it as a Remote item
+    /// that clients can direct-play (the proxy endpoint serves the local file).
     /// </summary>
-    public void SyncItems(IReadOnlyList<TrailerInfo> trailers)
+    public void SyncItems(IReadOnlyList<TrailerInfo> trailers, string serverBaseUrl)
     {
         var folder = EnsureFolder();
 
@@ -37,30 +40,32 @@ public class TrailerLibraryService
             var itemId = GetItemId(trailer.VideoId);
             trailer.JellyfinItemId = itemId;
 
+            var proxyUrl = $"{serverBaseUrl.TrimEnd('/')}/TrailerCinema/Stream/{trailer.VideoId}";
+
             var existing = _libraryManager.GetItemById(itemId);
             if (existing is not null)
             {
-                // If the item already points to the correct local file, nothing to do.
-                if (existing.Path == trailer.LocalPath && !existing.IsVirtualItem)
+                // If the item already has the correct proxy URL and is non-virtual, reuse it.
+                if (existing.Path == proxyUrl && !existing.IsVirtualItem)
                     continue;
 
-                // Recreate if path changed or it's still a legacy virtual/remote item.
+                // Recreate if path or type changed (e.g. old local-file items from v1.1.18).
                 _libraryManager.DeleteItem(existing, new DeleteOptions { DeleteFileLocation = false }, false);
             }
 
             var video = new Video
             {
-                Id           = itemId,
-                Name         = trailer.Title,
-                Path         = trailer.LocalPath,  // Real local file → LocationType.FileSystem
+                Id            = itemId,
+                Name          = trailer.Title,
+                Path          = proxyUrl,      // HTTP URL → LocationType.Remote → client direct-plays
                 IsVirtualItem = false,
-                DateCreated  = trailer.DownloadedAt == DateTime.MinValue ? DateTime.UtcNow : trailer.DownloadedAt,
-                DateModified = DateTime.UtcNow,
-                Container    = "mp4"
+                DateCreated   = DateTime.UtcNow,
+                DateModified  = DateTime.UtcNow,
+                Container     = "mp4"
             };
 
             _libraryManager.CreateItem(video, folder);
-            _logger.LogDebug("TrailerCinema: synced library item {Id} → {Path}.", itemId, trailer.LocalPath);
+            _logger.LogDebug("TrailerCinema: synced item {Id} → {Url}.", itemId, proxyUrl);
         }
     }
 
