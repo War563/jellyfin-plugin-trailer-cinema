@@ -11,36 +11,27 @@ namespace JellyfinTrailerPlugin.Api;
 public class TrailerController : ControllerBase
 {
     private readonly TrailerCacheService _cache;
-    private readonly YtDlpService _ytDlp;
 
-    public TrailerController(TrailerCacheService cache, YtDlpService ytDlp)
+    public TrailerController(TrailerCacheService cache)
     {
         _cache = cache;
-        _ytDlp = ytDlp;
     }
 
     /// <summary>
-    /// Proxy endpoint: redirects to the actual yt-dlp stream URL for a trailer.
-    /// Video library items use this URL as their Path so Jellyfin can play them.
+    /// Serves the local mp4 file for a trailer (diagnostic / fallback endpoint).
+    /// Normal playback goes through Jellyfin's own file serving using the library item's Path.
     /// </summary>
     [HttpGet("Stream/{videoId}")]
     [AllowAnonymous]
-    [ProducesResponseType(StatusCodes.Status302Found)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> StreamTrailer(string videoId, CancellationToken cancellationToken)
+    public IActionResult StreamTrailer(string videoId)
     {
         var trailer = _cache.GetAllCached().FirstOrDefault(t => t.VideoId == videoId);
-        if (trailer is null)
+        if (trailer is null || !trailer.IsReady)
             return NotFound();
 
-        var url = trailer.StreamUrl;
-        if (string.IsNullOrEmpty(url) || trailer.IsExpired)
-            url = await _ytDlp.ResolveOneAsync(videoId, cancellationToken).ConfigureAwait(false);
-
-        if (string.IsNullOrEmpty(url))
-            return NotFound();
-
-        return Redirect(url);
+        return PhysicalFile(trailer.LocalPath, "video/mp4", enableRangeProcessing: true);
     }
 
     [HttpGet("Status")]
@@ -61,9 +52,9 @@ public class TrailerController : ControllerBase
         {
             t.VideoId,
             t.Title,
-            HasUrl     = !string.IsNullOrEmpty(t.StreamUrl),
-            t.IsExpired,
-            ResolvedAt = t.ResolvedAt == DateTime.MinValue ? (DateTime?)null : t.ResolvedAt
+            t.IsReady,
+            t.LocalPath,
+            Downloaded = t.DownloadedAt == DateTime.MinValue ? (DateTime?)null : t.DownloadedAt
         }));
 
     [HttpPost("Refresh")]

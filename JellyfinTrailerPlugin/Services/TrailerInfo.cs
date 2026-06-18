@@ -4,12 +4,15 @@ public class TrailerInfo
 {
     public string VideoId { get; set; } = string.Empty;
     public string Title { get; set; } = string.Empty;
-    public string StreamUrl { get; set; } = string.Empty;
-    public DateTime ResolvedAt { get; set; } = DateTime.MinValue;
+
+    /// <summary>Absolute path to the downloaded mp4 file on disk.</summary>
+    public string LocalPath { get; set; } = string.Empty;
+
+    public DateTime DownloadedAt { get; set; } = DateTime.MinValue;
 
     /// <summary>Jellyfin library item Guid assigned by TrailerLibraryService.</summary>
     public Guid JellyfinItemId { get; set; }
 
-    /// <summary>Stream URLs from yt-dlp expire after ~6 hours.</summary>
-    public bool IsExpired => DateTime.UtcNow - ResolvedAt > TimeSpan.FromHours(5);
+    /// <summary>True when the file has been downloaded and still exists on disk.</summary>
+    public bool IsReady => !string.IsNullOrEmpty(LocalPath) && File.Exists(LocalPath);
 }

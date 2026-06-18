@@ -11,36 +11,25 @@ using Microsoft.Extensions.Logging;
 
 namespace JellyfinTrailerPlugin.Channels;
 
-/// <summary>
-/// Exposes the trailer pool as a Jellyfin channel so each trailer gets a real
-/// library item ID that can be used in SendPlayCommand.ItemIds.
-/// IRequiresMediaInfoCallback lets us provide a fresh yt-dlp URL on every play
-/// request instead of baking potentially-expired URLs into the DB.
-/// </summary>
 public class TrailerChannel : IChannel, IRequiresMediaInfoCallback
 {
     private readonly TrailerCacheService _cache;
-    private readonly YtDlpService _ytDlp;
     private readonly ILibraryManager _libraryManager;
     private readonly ILogger<TrailerChannel> _logger;
 
     public TrailerChannel(
         TrailerCacheService cache,
-        YtDlpService ytDlp,
         ILibraryManager libraryManager,
         ILogger<TrailerChannel> logger)
     {
-        _cache = cache;
-        _ytDlp = ytDlp;
+        _cache          = cache;
         _libraryManager = libraryManager;
-        _logger = logger;
+        _logger         = logger;
     }
-
-    // ── IChannel ────────────────────────────────────────────────────────────
 
     public string Name => "Trailer Cinema";
     public string Description => "Pool de trailers para reproducir antes de cada película.";
-    public string DataVersion => "2";
+    public string DataVersion => "3";
     public string HomePageUrl => string.Empty;
     public ChannelParentalRating ParentalRating => ChannelParentalRating.GeneralAudience;
     public bool IsEnabledFor(string userId) => true;
@@ -59,16 +48,16 @@ public class TrailerChannel : IChannel, IRequiresMediaInfoCallback
 
     public Task<ChannelItemResult> GetChannelItems(InternalChannelItemQuery query, CancellationToken cancellationToken)
     {
-        var trailers = _cache.GetAllCached();
-
-        var items = trailers.Select(t => new ChannelItemInfo
-        {
-            Id          = t.VideoId,
-            Name        = t.Title,
-            Type        = ChannelItemType.Media,
-            ContentType = ChannelMediaContentType.Movie,
-            MediaType   = ChannelMediaType.Video
-        }).ToList();
+        var items = _cache.GetAllCached()
+            .Where(t => t.IsReady)
+            .Select(t => new ChannelItemInfo
+            {
+                Id          = t.VideoId,
+                Name        = t.Title,
+                Type        = ChannelItemType.Media,
+                ContentType = ChannelMediaContentType.Movie,
+                MediaType   = ChannelMediaType.Video
+            }).ToList();
 
         return Task.FromResult(new ChannelItemResult
         {
@@ -77,51 +66,35 @@ public class TrailerChannel : IChannel, IRequiresMediaInfoCallback
         });
     }
 
-    // ── IRequiresMediaInfoCallback ───────────────────────────────────────────
-
-    public async Task<IEnumerable<MediaSourceInfo>> GetChannelItemMediaInfo(
+    public Task<IEnumerable<MediaSourceInfo>> GetChannelItemMediaInfo(
         string id, CancellationToken cancellationToken)
     {
         var trailer = _cache.GetAllCached().FirstOrDefault(t => t.VideoId == id);
-        if (trailer is null) return Enumerable.Empty<MediaSourceInfo>();
-
-        var url = trailer.StreamUrl;
-        if (string.IsNullOrEmpty(url) || trailer.IsExpired)
+        if (trailer is null || !trailer.IsReady)
         {
-            _logger.LogDebug("TrailerCinema: renewing stream URL for {VideoId}.", id);
-            url = await _ytDlp.ResolveOneAsync(id, cancellationToken).ConfigureAwait(false);
+            _logger.LogWarning("TrailerCinema channel: no ready file for {VideoId}.", id);
+            return Task.FromResult(Enumerable.Empty<MediaSourceInfo>());
         }
 
-        if (string.IsNullOrEmpty(url)) return Enumerable.Empty<MediaSourceInfo>();
-
-        return new[]
+        return Task.FromResult<IEnumerable<MediaSourceInfo>>(new[]
         {
             new MediaSourceInfo
             {
-                Id                  = id,
-                Path                = url,
-                Protocol            = MediaProtocol.Http,
-                IsRemote            = true,
-                Name                = trailer.Title,
-                SupportsDirectPlay  = true,
+                Id                   = id,
+                Path                 = trailer.LocalPath,
+                Protocol             = MediaProtocol.File,
+                IsRemote             = false,
+                Name                 = trailer.Title,
+                SupportsDirectPlay   = true,
                 SupportsDirectStream = true,
-                SupportsTranscoding = false
+                SupportsTranscoding  = true
             }
-        };
+        });
     }
 
-    // ── Helpers ─────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Computes the Jellyfin library Guid for a channel item using the same
-    /// deterministic formula that ChannelManager uses internally.
-    /// </summary>
     public Guid GetJellyfinItemId(string videoId)
     {
-        var channelId = _libraryManager.GetNewItemId(
-            "Channel" + Name,
-            typeof(Channel));
-
+        var channelId = _libraryManager.GetNewItemId("Channel" + Name, typeof(Channel));
         return _libraryManager.GetNewItemId(
             channelId.ToString("N") + videoId,
             typeof(MediaBrowser.Controller.Entities.Video));

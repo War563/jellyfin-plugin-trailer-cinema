@@ -9,6 +9,8 @@ public class YtDlpService
 {
     private readonly ILogger<YtDlpService> _logger;
     private readonly IApplicationPaths _appPaths;
+
+    // 3 concurrent downloads to avoid hammering YouTube/network.
     private readonly SemaphoreSlim _semaphore = new SemaphoreSlim(3, 3);
     private readonly SemaphoreSlim _initLock = new SemaphoreSlim(1, 1);
     private volatile string? _resolvedPath;
@@ -19,25 +21,51 @@ public class YtDlpService
         _appPaths = appPaths;
     }
 
-    public async Task ResolveUrlsAsync(IEnumerable<TrailerInfo> trailers, CancellationToken ct)
+    /// <summary>
+    /// Downloads each trailer as a merged 1080p mp4 to <paramref name="downloadDir"/>.
+    /// Skips trailers whose file already exists. Sets LocalPath and DownloadedAt on success.
+    /// </summary>
+    public async Task DownloadTrailersAsync(IEnumerable<TrailerInfo> trailers, string downloadDir, CancellationToken ct)
     {
-        var tasks = trailers.Select(t => ResolveOneAsync(t, ct));
-        await Task.WhenAll(tasks);
+        Directory.CreateDirectory(downloadDir);
+        var tasks = trailers.Select(t => DownloadOneAsync(t, downloadDir, ct));
+        await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
-    public Task<string?> ResolveOneAsync(string videoId, CancellationToken ct)
-        => RunYtDlpAsync(videoId, ct);
-
-    private async Task ResolveOneAsync(TrailerInfo trailer, CancellationToken ct)
+    private async Task DownloadOneAsync(TrailerInfo trailer, string downloadDir, CancellationToken ct)
     {
-        await _semaphore.WaitAsync(ct);
+        var outputPath = Path.Combine(downloadDir, $"{trailer.VideoId}.mp4");
+
+        if (File.Exists(outputPath))
+        {
+            trailer.LocalPath = outputPath;
+            if (trailer.DownloadedAt == DateTime.MinValue)
+                trailer.DownloadedAt = File.GetLastWriteTimeUtc(outputPath);
+            return;
+        }
+
+        await _semaphore.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var url = await RunYtDlpAsync(trailer.VideoId, ct);
-            if (!string.IsNullOrEmpty(url))
+            // Check again inside semaphore in case another task downloaded it.
+            if (File.Exists(outputPath))
             {
-                trailer.StreamUrl = url;
-                trailer.ResolvedAt = DateTime.UtcNow;
+                trailer.LocalPath = outputPath;
+                trailer.DownloadedAt = File.GetLastWriteTimeUtc(outputPath);
+                return;
+            }
+
+            await RunDownloadAsync(trailer.VideoId, outputPath, ct).ConfigureAwait(false);
+
+            if (File.Exists(outputPath))
+            {
+                trailer.LocalPath = outputPath;
+                trailer.DownloadedAt = DateTime.UtcNow;
+                _logger.LogInformation("TrailerCinema: downloaded '{Title}' ({Id}).", trailer.Title, trailer.VideoId);
+            }
+            else
+            {
+                _logger.LogWarning("TrailerCinema: download produced no output for {Id}.", trailer.VideoId);
             }
         }
         finally
@@ -46,24 +74,100 @@ public class YtDlpService
         }
     }
 
+    private async Task RunDownloadAsync(string videoId, string outputPath, CancellationToken ct)
+    {
+        string ytDlpPath;
+        try
+        {
+            ytDlpPath = await GetYtDlpPathAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "TrailerCinema: could not locate or download yt-dlp.");
+            return;
+        }
+
+        // Try to locate ffmpeg so yt-dlp can merge video+audio streams.
+        var ffmpegArg = GetFfmpegLocationArg();
+
+        // Format priority:
+        //   1. 1080p mp4 video + m4a audio (separate streams, merged by yt-dlp/ffmpeg)
+        //   2. Best video ≤1080p + any audio
+        //   3. Single-stream best available
+        var format = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best";
+        var args = $"-f \"{format}\" --merge-output-format mp4 {ffmpegArg} --no-playlist -o \"{outputPath}\" \"https://www.youtube.com/watch?v={videoId}\"";
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = ytDlpPath,
+            Arguments = args,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        try
+        {
+            _logger.LogDebug("TrailerCinema: downloading {Id} with args: {Args}", videoId, args);
+            using var process = Process.Start(psi)
+                ?? throw new InvalidOperationException("Could not start yt-dlp process.");
+
+            var errorTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync(ct).ConfigureAwait(false);
+            var error = (await errorTask).Trim();
+
+            if (process.ExitCode != 0)
+                _logger.LogWarning("TrailerCinema: yt-dlp exited {Code} for {Id}: {Error}",
+                    process.ExitCode, videoId, error);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "TrailerCinema: yt-dlp download failed for {Id}.", videoId);
+        }
+    }
+
+    private static string GetFfmpegLocationArg()
+    {
+        // Explicit override in plugin config wins.
+        var configured = Plugin.Instance?.Configuration.FfmpegPath?.Trim();
+        if (!string.IsNullOrEmpty(configured) && File.Exists(configured))
+            return $"--ffmpeg-location \"{configured}\"";
+
+        // Common Jellyfin-FFmpeg paths (Linux).
+        string[] candidates =
+        [
+            "/usr/lib/jellyfin-ffmpeg/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            "/usr/bin/ffmpeg",
+        ];
+
+        foreach (var c in candidates)
+        {
+            if (File.Exists(c))
+                return $"--ffmpeg-location \"{c}\"";
+        }
+
+        // Let yt-dlp find ffmpeg in PATH (Windows or custom installations).
+        return string.Empty;
+    }
+
     private async Task<string> GetYtDlpPathAsync(CancellationToken ct)
     {
-        // Manual override wins — always use it without caching.
         var configured = Plugin.Instance?.Configuration.YtDlpPath?.Trim();
         if (!string.IsNullOrEmpty(configured))
             return configured;
 
-        // Auto-detect / auto-download (result cached for lifetime of the service).
         if (_resolvedPath is not null)
             return _resolvedPath;
 
-        await _initLock.WaitAsync(ct);
+        await _initLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             if (_resolvedPath is not null)
                 return _resolvedPath;
 
-            _resolvedPath = await LocateOrDownloadAsync(ct);
+            _resolvedPath = await LocateOrDownloadAsync(ct).ConfigureAwait(false);
             return _resolvedPath;
         }
         finally
@@ -88,7 +192,7 @@ public class YtDlpService
         }
 
         _logger.LogInformation("TrailerCinema: yt-dlp not found — downloading automatically...");
-        await DownloadAsync(local, ct);
+        await DownloadBinaryAsync(local, ct).ConfigureAwait(false);
         return local;
     }
 
@@ -117,7 +221,7 @@ public class YtDlpService
         catch { return false; }
     }
 
-    private async Task DownloadAsync(string dest, CancellationToken ct)
+    private async Task DownloadBinaryAsync(string dest, CancellationToken ct)
     {
         string url;
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
@@ -130,11 +234,12 @@ public class YtDlpService
             url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux";
 
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
-        using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+        using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct)
+            .ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
         await using var fs = File.Create(dest);
-        await response.Content.CopyToAsync(fs, ct);
+        await response.Content.CopyToAsync(fs, ct).ConfigureAwait(false);
         fs.Close();
 
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
@@ -144,67 +249,5 @@ public class YtDlpService
                 UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
 
         _logger.LogInformation("TrailerCinema: yt-dlp downloaded to {Path}.", dest);
-    }
-
-    private async Task<string?> RunYtDlpAsync(string videoId, CancellationToken ct)
-    {
-        string ytDlpPath;
-        try
-        {
-            ytDlpPath = await GetYtDlpPathAsync(ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "TrailerCinema: could not locate or download yt-dlp.");
-            return null;
-        }
-
-        // Format 22 = YouTube's 720p mp4 with audio+video combined in one file.
-        // "bestvideo+bestaudio" gives TWO separate URLs; taking only the first = video-only, no sound.
-        // Fallbacks ensure we always get a single combined stream even if format 22 is unavailable.
-        var args = $"-f \"22/best[height>=480][ext=mp4]/best[ext=mp4]/best\" -g --no-playlist \"https://www.youtube.com/watch?v={videoId}\"";
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = ytDlpPath,
-            Arguments = args,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        try
-        {
-            using var process = Process.Start(psi)
-                ?? throw new InvalidOperationException("Could not start yt-dlp process.");
-
-            var outputTask = process.StandardOutput.ReadToEndAsync();
-            var errorTask  = process.StandardError.ReadToEndAsync();
-
-            await process.WaitForExitAsync(ct);
-            var output = (await outputTask).Trim();
-            var error  = (await errorTask).Trim();
-
-            if (process.ExitCode != 0)
-            {
-                _logger.LogWarning("TrailerCinema: yt-dlp exited with code {Code} for {Id}: {Error}",
-                    process.ExitCode, videoId, error);
-                return null;
-            }
-
-            var firstUrl = output.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
-
-            if (firstUrl != null)
-                _logger.LogDebug("TrailerCinema: resolved {Id} → {Url}",
-                    videoId, firstUrl[..Math.Min(80, firstUrl.Length)]);
-
-            return firstUrl;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "TrailerCinema: yt-dlp failed for {Id}.", videoId);
-            return null;
-        }
     }
 }

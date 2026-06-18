@@ -13,7 +13,7 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Number of trailers to play before each movie.</summary>
     public int TrailerCount { get; set; } = 5;
 
-    /// <summary>Total pool size kept in memory.</summary>
+    /// <summary>Total pool size kept on disk.</summary>
     public int PoolSize { get; set; } = 20;
 
     /// <summary>Case-insensitive substring that video titles must contain.</summary>
@@ -25,21 +25,21 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Shuffle the pool before picking trailers.</summary>
     public bool Shuffle { get; set; } = true;
 
-    /// <summary>Minimum video duration in seconds (skip shorts).</summary>
+    /// <summary>Minimum video duration in seconds.</summary>
     public int MinDurationSeconds { get; set; } = 60;
 
-    /// <summary>Maximum video duration in seconds (skip feature-length uploads).</summary>
+    /// <summary>Maximum video duration in seconds.</summary>
     public int MaxDurationSeconds { get; set; } = 300;
 
     /// <summary>
-    /// Base URL the Jellyfin server uses for internal API calls.
-    /// Used to construct the trailer stream proxy URL.
-    /// </summary>
-    public string ServerBaseUrl { get; set; } = "http://localhost:8096";
-
-    /// <summary>
-    /// Full path to the yt-dlp binary. Leave empty to auto-detect (system PATH)
+    /// Full path to the yt-dlp binary. Leave empty to auto-detect from system PATH
     /// or auto-download into the plugin data directory.
     /// </summary>
     public string YtDlpPath { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Full path to the ffmpeg binary used by yt-dlp to merge video+audio streams.
+    /// Leave empty to auto-detect (checks /usr/lib/jellyfin-ffmpeg/ffmpeg and system PATH).
+    /// </summary>
+    public string FfmpegPath { get; set; } = string.Empty;
 }

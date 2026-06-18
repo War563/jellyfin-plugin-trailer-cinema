@@ -5,15 +5,12 @@ using Microsoft.Extensions.Logging;
 namespace JellyfinTrailerPlugin.Services;
 
 /// <summary>
-/// Creates and maintains video items in Jellyfin's library database, one per cached trailer.
-/// Each item's path points to the plugin's proxy endpoint which redirects to the yt-dlp stream URL.
-/// Items are created as non-virtual remote items so Jellyfin builds a MediaSource and clients
-/// can queue and play them via PlayNow.
+/// Creates and maintains Video items in Jellyfin's library, one per downloaded trailer.
+/// Each item's Path points to the local mp4 file so Jellyfin serves it natively.
 /// </summary>
 public class TrailerLibraryService
 {
-    // Stable folder Guid — deterministic so it survives restarts.
-    private static readonly Guid FolderGuid = new Guid("c1a2b3d4-e5f6-7890-abcd-ef1234567890");
+    private static readonly Guid FolderGuid = new("c1a2b3d4-e5f6-7890-abcd-ef1234567890");
 
     private readonly ILibraryManager _libraryManager;
     private readonly ILogger<TrailerLibraryService> _logger;
@@ -24,18 +21,14 @@ public class TrailerLibraryService
         _logger         = logger;
     }
 
-    /// <summary>
-    /// Returns the deterministic Jellyfin Guid for a given YouTube video ID.
-    /// The ID is the same every run so existing DB entries are reused.
-    /// </summary>
     public Guid GetItemId(string videoId)
         => _libraryManager.GetNewItemId("TrailerCinema:" + videoId, typeof(Video));
 
     /// <summary>
-    /// Ensures the virtual pool folder and one Video item per trailer exist in the
-    /// Jellyfin database. Sets <see cref="TrailerInfo.JellyfinItemId"/> on each entry.
+    /// Ensures one Video library item per trailer exists, pointing at the local mp4 file.
+    /// Sets <see cref="TrailerInfo.JellyfinItemId"/> on each entry.
     /// </summary>
-    public void SyncItems(IReadOnlyList<TrailerInfo> trailers, string serverBaseUrl)
+    public void SyncItems(IReadOnlyList<TrailerInfo> trailers)
     {
         var folder = EnsureFolder();
 
@@ -47,30 +40,27 @@ public class TrailerLibraryService
             var existing = _libraryManager.GetItemById(itemId);
             if (existing is not null)
             {
-                if (!existing.IsVirtualItem)
-                    continue; // Already created correctly as a remote item.
+                // If the item already points to the correct local file, nothing to do.
+                if (existing.Path == trailer.LocalPath && !existing.IsVirtualItem)
+                    continue;
 
-                // Migrate: old items were created with IsVirtualItem = true which makes Jellyfin
-                // return no MediaSources for them, so clients skip them in the play queue.
-                // Delete and recreate as non-virtual so Jellyfin treats them as remote media.
+                // Recreate if path changed or it's still a legacy virtual/remote item.
                 _libraryManager.DeleteItem(existing, new DeleteOptions { DeleteFileLocation = false }, false);
             }
 
-            var proxyUrl = $"{serverBaseUrl.TrimEnd('/')}/TrailerCinema/Stream/{trailer.VideoId}";
-
             var video = new Video
             {
-                Id            = itemId,
-                Name          = trailer.Title,
-                Path          = proxyUrl,
-                IsVirtualItem = false,  // False → LocationType.Remote → Jellyfin creates a valid MediaSource.
-                DateCreated   = DateTime.UtcNow,
-                DateModified  = DateTime.UtcNow,
-                Container     = "mp4"
+                Id           = itemId,
+                Name         = trailer.Title,
+                Path         = trailer.LocalPath,  // Real local file → LocationType.FileSystem
+                IsVirtualItem = false,
+                DateCreated  = trailer.DownloadedAt == DateTime.MinValue ? DateTime.UtcNow : trailer.DownloadedAt,
+                DateModified = DateTime.UtcNow,
+                Container    = "mp4"
             };
 
             _libraryManager.CreateItem(video, folder);
-            _logger.LogDebug("TrailerCinema: created library item {Id} for {VideoId}.", itemId, trailer.VideoId);
+            _logger.LogDebug("TrailerCinema: synced library item {Id} → {Path}.", itemId, trailer.LocalPath);
         }
     }
 

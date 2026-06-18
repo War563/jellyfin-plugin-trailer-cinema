@@ -52,7 +52,7 @@
                 <div class="inputContainer">
                     <label class="inputLabel inputLabelUnfocused" for="PoolSize">Tamaño del pool</label>
                     <input id="PoolSize" name="PoolSize" type="number" is="emby-input" min="5" max="100" />
-                    <div class="fieldDescription">Cuántos trailers se mantienen en memoria para servir sin espera.</div>
+                    <div class="fieldDescription">Cuántos trailers se descargan. Cada uno ocupa ~60 MB a 1080p.</div>
                 </div>
 
                 <div class="inputContainer">
@@ -66,17 +66,17 @@
                 </div>
 
                 <div class="inputContainer">
-                    <label class="inputLabel inputLabelUnfocused" for="ServerBaseUrl">URL base del servidor</label>
-                    <input id="ServerBaseUrl" name="ServerBaseUrl" type="text" is="emby-input"
-                           placeholder="http://localhost:8096" />
-                    <div class="fieldDescription">URL interna de Jellyfin (usada para el proxy de streaming).</div>
-                </div>
-
-                <div class="inputContainer">
                     <label class="inputLabel inputLabelUnfocused" for="YtDlpPath">Ruta a yt-dlp (opcional)</label>
                     <input id="YtDlpPath" name="YtDlpPath" type="text" is="emby-input"
                            placeholder="/usr/local/bin/yt-dlp" />
                     <div class="fieldDescription">Dejar vacío para descarga automática. Si el contenedor no tiene yt-dlp, el plugin lo descargará en /config/data/ytdlp/.</div>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="FfmpegPath">Ruta a ffmpeg (opcional)</label>
+                    <input id="FfmpegPath" name="FfmpegPath" type="text" is="emby-input"
+                           placeholder="/usr/lib/jellyfin-ffmpeg/ffmpeg" />
+                    <div class="fieldDescription">Necesario para mezclar vídeo+audio a 1080p. Dejar vacío para auto-detectar (prueba /usr/lib/jellyfin-ffmpeg/ffmpeg y el PATH del sistema).</div>
                 </div>
 
                 <div class="checkboxContainer checkboxContainer-withDescription">
@@ -114,8 +114,8 @@
                     document.querySelector('#MinDurationSeconds').value = config.MinDurationSeconds || 60;
                     document.querySelector('#MaxDurationSeconds').value = config.MaxDurationSeconds || 300;
                     document.querySelector('#Shuffle').checked = config.Shuffle !== false;
-                    document.querySelector('#ServerBaseUrl').value = config.ServerBaseUrl ?? 'http://localhost:8096';
                     document.querySelector('#YtDlpPath').value = config.YtDlpPath ?? '';
+                    document.querySelector('#FfmpegPath').value = config.FfmpegPath ?? '';
                     Dashboard.hideLoadingMsg();
                 });
             },
@@ -133,8 +133,8 @@
                     config.MinDurationSeconds = parseInt(document.querySelector('#MinDurationSeconds').value, 10);
                     config.MaxDurationSeconds = parseInt(document.querySelector('#MaxDurationSeconds').value, 10);
                     config.Shuffle = document.querySelector('#Shuffle').checked;
-                    config.ServerBaseUrl = document.querySelector('#ServerBaseUrl').value;
                     config.YtDlpPath = document.querySelector('#YtDlpPath').value;
+                    config.FfmpegPath = document.querySelector('#FfmpegPath').value;
                     ApiClient.updatePluginConfiguration(TrailerCinemaConfig.pluginId, config).then(function () {
                         Dashboard.processPluginConfigurationUpdateResult();
                     });

@@ -1,5 +1,4 @@
 using MediaBrowser.Controller.Entities.Movies;
-using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Session;
 using MediaBrowser.Model.Session;
 using Microsoft.Extensions.Logging;
@@ -9,14 +8,12 @@ namespace JellyfinTrailerPlugin.Services;
 public class PlaybackHookService : IDisposable
 {
     private readonly ISessionManager _sessionManager;
-    private readonly ILibraryManager _libraryManager;
     private readonly TrailerCacheService _cache;
     private readonly ILogger<PlaybackHookService> _logger;
 
-    // Tracks (sessionId, movieId) pairs that are currently in a trailer-injection sequence.
-    // Added in OnPlaybackStart (before Task.Run) to prevent double-injection races.
-    // Removed when the movie stops after meaningful playback (>30 s) so trailers show again
-    // on the next viewing. Stops at 0–30 s (client retries) do NOT clear it — prevents the loop.
+    // Tracks (sessionId, movieId) pairs where trailers have already been injected.
+    // Prevents re-injection if the client briefly restarts playback.
+    // Cleared when the movie finishes after >30 s so trailers play again next time.
     private readonly HashSet<(string, Guid)> _injectedSessions = new();
     private readonly object _lock = new();
 
@@ -24,12 +21,10 @@ public class PlaybackHookService : IDisposable
 
     public PlaybackHookService(
         ISessionManager sessionManager,
-        ILibraryManager libraryManager,
         TrailerCacheService cache,
         ILogger<PlaybackHookService> logger)
     {
         _sessionManager = sessionManager;
-        _libraryManager = libraryManager;
         _cache          = cache;
         _logger         = logger;
 
@@ -51,7 +46,6 @@ public class PlaybackHookService : IDisposable
         if (e.Item is not Movie) return;
 
         // Only clear suppression after a real watch session (>30 s played).
-        // Short stops (0 ms, client retries) keep the entry so the loop can't restart.
         if ((e.PlaybackPositionTicks ?? 0) > ThirtySecondsTicks)
         {
             lock (_lock)
@@ -67,7 +61,6 @@ public class PlaybackHookService : IDisposable
 
         lock (_lock)
         {
-            // Already injected trailers for this movie in this session — suppress.
             if (!_injectedSessions.Add((e.Session.Id, e.Item.Id)))
                 return;
         }
@@ -82,37 +75,34 @@ public class PlaybackHookService : IDisposable
             var config = Plugin.Instance?.Configuration;
             if (config is null) return;
 
-            // Fetch the full pool so we can filter and still hit the configured count.
-            var allTrailers = await _cache.GetTrailersAsync(config, config.PoolSize, CancellationToken.None)
+            var allReady = await _cache.GetTrailersAsync(config, config.PoolSize, CancellationToken.None)
                 .ConfigureAwait(false);
 
-            if (allTrailers.Count == 0)
+            if (allReady.Count == 0)
             {
-                _logger.LogInformation("TrailerCinema: pool empty — skipping for session {S}.", session.Id);
+                _logger.LogInformation(
+                    "TrailerCinema: pool has no ready trailers — skipping for session {S}.", session.Id);
                 return;
             }
 
-            // Keep only trailers whose library item exists, then shuffle, then cap at TrailerCount.
-            var available = allTrailers
-                .Where(t => t.JellyfinItemId != Guid.Empty
-                         && _libraryManager.GetItemById(t.JellyfinItemId) is not null)
-                .ToList();
-
-            if (available.Count == 0)
-            {
-                _logger.LogWarning("TrailerCinema: no library items found in DB yet — waiting for next refresh.");
-                return;
-            }
-
+            // Shuffle here so every call gets a different order.
             if (config.Shuffle)
-                available = available.OrderBy(_ => Random.Shared.Next()).ToList();
+                allReady = allReady.OrderBy(_ => Random.Shared.Next()).ToList();
 
-            var trailerIds = available
+            var trailerIds = allReady
+                .Where(t => t.JellyfinItemId != Guid.Empty)
                 .Select(t => t.JellyfinItemId)
                 .Take(config.TrailerCount)
                 .ToList();
 
-            // Stop current playback
+            if (trailerIds.Count == 0)
+            {
+                _logger.LogWarning(
+                    "TrailerCinema: trailers ready but no library items yet — waiting for next refresh.");
+                return;
+            }
+
+            // Stop the movie that just started.
             await _sessionManager.SendPlaystateCommand(
                 session.Id,
                 session.Id,
@@ -121,7 +111,7 @@ public class PlaybackHookService : IDisposable
 
             await Task.Delay(800).ConfigureAwait(false);
 
-            // Single PlayNow: all trailers followed by the original movie
+            // Queue all trailers followed by the original movie in a single PlayNow.
             var allIds = trailerIds.Append(movie.Id).ToArray();
 
             await _sessionManager.SendPlayCommand(
@@ -143,7 +133,6 @@ public class PlaybackHookService : IDisposable
         {
             _logger.LogError(ex, "TrailerCinema: error injecting trailers for session {S}.", session.Id);
 
-            // Allow movie to play normally if injection failed
             lock (_lock)
             {
                 _injectedSessions.Remove((session.Id, movie.Id));
