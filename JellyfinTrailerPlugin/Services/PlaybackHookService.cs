@@ -13,11 +13,14 @@ public class PlaybackHookService : IDisposable
     private readonly TrailerCacheService _cache;
     private readonly ILogger<PlaybackHookService> _logger;
 
-    // Tracks (sessionId, movieId) pairs that already received trailer injection.
-    // Keyed in OnPlaybackStart (before Task.Run) to prevent double-injection races.
-    // Cleared on injection failure so the user can retry.
+    // Tracks (sessionId, movieId) pairs that are currently in a trailer-injection sequence.
+    // Added in OnPlaybackStart (before Task.Run) to prevent double-injection races.
+    // Removed when the movie stops after meaningful playback (>30 s) so trailers show again
+    // on the next viewing. Stops at 0–30 s (client retries) do NOT clear it — prevents the loop.
     private readonly HashSet<(string, Guid)> _injectedSessions = new();
     private readonly object _lock = new();
+
+    private static readonly long ThirtySecondsTicks = TimeSpan.FromSeconds(30).Ticks;
 
     public PlaybackHookService(
         ISessionManager sessionManager,
@@ -30,16 +33,31 @@ public class PlaybackHookService : IDisposable
         _cache          = cache;
         _logger         = logger;
 
-        _sessionManager.PlaybackStart += OnPlaybackStart;
-        _sessionManager.SessionEnded  += OnSessionEnded;
+        _sessionManager.PlaybackStart   += OnPlaybackStart;
+        _sessionManager.PlaybackStopped += OnPlaybackStopped;
+        _sessionManager.SessionEnded    += OnSessionEnded;
     }
 
     private void OnSessionEnded(object? sender, SessionEventArgs e)
     {
-        // Clean up entries for the ended session to avoid unbounded growth.
         lock (_lock)
         {
             _injectedSessions.RemoveWhere(k => k.Item1 == e.SessionInfo.Id);
+        }
+    }
+
+    private void OnPlaybackStopped(object? sender, PlaybackStopEventArgs e)
+    {
+        if (e.Item is not Movie) return;
+
+        // Only clear suppression after a real watch session (>30 s played).
+        // Short stops (0 ms, client retries) keep the entry so the loop can't restart.
+        if ((e.PlaybackPositionTicks ?? 0) > ThirtySecondsTicks)
+        {
+            lock (_lock)
+            {
+                _injectedSessions.Remove((e.Session.Id, e.Item.Id));
+            }
         }
     }
 
@@ -127,8 +145,9 @@ public class PlaybackHookService : IDisposable
 
     public void Dispose()
     {
-        _sessionManager.PlaybackStart -= OnPlaybackStart;
-        _sessionManager.SessionEnded  -= OnSessionEnded;
+        _sessionManager.PlaybackStart   -= OnPlaybackStart;
+        _sessionManager.PlaybackStopped -= OnPlaybackStopped;
+        _sessionManager.SessionEnded    -= OnSessionEnded;
         GC.SuppressFinalize(this);
     }
 }
