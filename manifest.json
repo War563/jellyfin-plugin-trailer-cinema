@@ -10,7 +10,7 @@
     "versions": [
       {
         "version": "1.1.25.0",
-        "changelog": "Release 1.1.25.",
+        "changelog": "Trailers individuales con orden aleatorio por reproducción y timer de respaldo.\n\n- Cada trailer es un item propio: muestra su título real en el reproductor (ya no 'Trailer Cinema' genérico).\n- El orden se baraja en cada reproducción (no solo al hacer refresh diario).\n- Timer de respaldo: si Fire TV / Android TV no envía PlaybackStopped al terminar el vídeo, el servidor avanza solo tras duración + 12 s.\n- Pulsar Stop en un trailer salta al siguiente (o inicia la película si era el último).",
         "targetAbi": "10.11.0.0",
         "sourceUrl": "https://github.com/War563/jellyfin-plugin-trailer-cinema/releases/download/v1.1.25/JellyfinTrailerPlugin_1.1.25.zip",
         "checksum": "1ad7a740a96f27a1344b849a2f3f4c3b",
@@ -18,7 +18,7 @@
       },
       {
         "version": "1.1.24.0",
-        "changelog": "Release 1.1.24.",
+        "changelog": "Fix: la película no arrancaba tras los trailers en Android TV / Fire TV.\n\nEl cliente Jellyfin no avanza la cola client-side al terminar el primer item. Ahora el servidor envía PlayNow [película] explícitamente cuando recibe PlaybackStopped del trailer combinado.",
         "targetAbi": "10.11.0.0",
         "sourceUrl": "https://github.com/War563/jellyfin-plugin-trailer-cinema/releases/download/v1.1.24/JellyfinTrailerPlugin_1.1.24.zip",
         "checksum": "ea1a65dca6287c49543ddf6d908230f4",
@@ -26,7 +26,7 @@
       },
       {
         "version": "1.1.23.0",
-        "changelog": "Release 1.1.23.",
+        "changelog": "Fix: VLC se cerraba al rebobinar el trailer combinado.\n\nSe añade -movflags +faststart al comando ffmpeg de concatenación. Sin este flag el átomo moov (índice del MP4) queda al final del fichero y VLC necesita hacer un HTTP-seek hasta el final antes de poder navegar por el vídeo, lo que le hace fallar.",
         "targetAbi": "10.11.0.0",
         "sourceUrl": "https://github.com/War563/jellyfin-plugin-trailer-cinema/releases/download/v1.1.23/JellyfinTrailerPlugin_1.1.23.zip",
         "checksum": "7c05a4bcaa4ee930f0bb4fbeb7b9d68a",
@@ -34,7 +34,7 @@
       },
       {
         "version": "1.1.22.0",
-        "changelog": "Release 1.1.22.",
+        "changelog": "Marcadores de capítulo en el MP4 combinado.\n\nSe embeben capítulos ffmetadata en el fichero combinado para que VLC muestre el título de cada trailer conforme avanza la reproducción.",
         "targetAbi": "10.11.0.0",
         "sourceUrl": "https://github.com/War563/jellyfin-plugin-trailer-cinema/releases/download/v1.1.22/JellyfinTrailerPlugin_1.1.22.zip",
         "checksum": "23562778ab66d865a88b5c0cbd85ccfa",
@@ -42,7 +42,7 @@
       },
       {
         "version": "1.1.21.0",
-        "changelog": "Release 1.1.21.",
+        "changelog": "Trailer único concatenado para compatibilidad con VLC.\n\nLos N trailers se combinan en un solo MP4 con ffmpeg. VLC recibe un único fichero y los reproduce todos seguidos, evitando el problema de que no avanzaba la cola de Jellyfin.",
         "targetAbi": "10.11.0.0",
         "sourceUrl": "https://github.com/War563/jellyfin-plugin-trailer-cinema/releases/download/v1.1.21/JellyfinTrailerPlugin_1.1.21.zip",
         "checksum": "20cd5603021e3dddc13b086faad049aa",
@@ -50,7 +50,7 @@
       },
       {
         "version": "1.1.20.0",
-        "changelog": "Release 1.1.20.",
+        "changelog": "Reproducción secuencial de trailers via PlaybackStopped.\n\nCada trailer se encola individualmente: cuando uno termina el servidor lanza el siguiente. No funcionó con VLC en móvil (VLC no reporta PlaybackStopped al servidor).",
         "targetAbi": "10.11.0.0",
         "sourceUrl": "https://github.com/War563/jellyfin-plugin-trailer-cinema/releases/download/v1.1.20/JellyfinTrailerPlugin_1.1.20.zip",
         "checksum": "eeb92078da58bfa921741f906aedf82c",
@@ -58,7 +58,7 @@
       },
       {
         "version": "1.1.19.0",
-        "changelog": "Release 1.1.19.",
+        "changelog": "Fix: trailers no reproducibles desde rutas locales.\n\nSe añade un endpoint proxy HTTP (/TrailerCinema/Stream/{id}) que sirve los MP4 descargados localmente. Los items de Jellyfin apuntan a esta URL en lugar de a la ruta de disco, que el cliente no podía acceder.",
         "targetAbi": "10.11.0.0",
         "sourceUrl": "https://github.com/War563/jellyfin-plugin-trailer-cinema/releases/download/v1.1.19/JellyfinTrailerPlugin_1.1.19.zip",
         "checksum": "706f5c5ef126fb53d0ca5d99c93f7dea",
