@@ -13,12 +13,13 @@ public class PlaybackHookService : IDisposable
     private readonly TrailerCacheService _cache;
     private readonly ILogger<PlaybackHookService> _logger;
 
-    // (sessionId, movieId) that have already had trailers injected. Prevents re-injection.
+    // (sessionId, movieId) already injected — prevents re-injection when movie starts.
     private readonly HashSet<(string, Guid)> _injectedSessions = new();
 
     // Per-session state while trailers are playing.
-    // CurrentIndex = which trailer in Queue is currently playing.
-    // TimerCts cancels the timer-fallback task when PlaybackStopped arrives first.
+    // We send the full queue [t1 … tN, movie] so the client shows navigation arrows.
+    // CurrentIndex = which trailer is currently playing (updated via OnPlaybackStart).
+    // TimerCts cancels the NextTrack timer when the client self-advances.
     private sealed record SessionState(
         Guid MovieId,
         IReadOnlyList<TrailerInfo> Queue,
@@ -29,8 +30,7 @@ public class PlaybackHookService : IDisposable
     private readonly object _lock = new();
 
     private static readonly long ThirtySecondsTicks = TimeSpan.FromSeconds(30).Ticks;
-    // Used when ffprobe couldn't determine a trailer's duration.
-    private const long FallbackTimerMs = 15 * 60 * 1000L;
+    private const long FallbackTimerMs = 15 * 60 * 1000L; // used when ffprobe couldn't read duration
 
     public PlaybackHookService(
         ISessionManager sessionManager,
@@ -46,17 +46,13 @@ public class PlaybackHookService : IDisposable
         _sessionManager.SessionEnded    += OnSessionEnded;
     }
 
-    // ── Event handlers ──────────────────────────────────────────────────────
+    // ── Event handlers ───────────────────────────────────────────────────────
 
     private void OnSessionEnded(object? sender, SessionEventArgs e)
     {
         lock (_lock)
         {
-            if (_sessions.TryGetValue(e.SessionInfo.Id, out var state))
-            {
-                state.TimerCts.Cancel();
-                _sessions.Remove(e.SessionInfo.Id);
-            }
+            if (_sessions.TryGetValue(e.SessionInfo.Id, out var s)) { s.TimerCts.Cancel(); _sessions.Remove(e.SessionInfo.Id); }
             _injectedSessions.RemoveWhere(k => k.Item1 == e.SessionInfo.Id);
         }
     }
@@ -67,37 +63,75 @@ public class PlaybackHookService : IDisposable
 
         if (e.Item is Movie)
         {
-            // After a genuine viewing (>30 s), clear suppression so trailers re-inject next time.
             if ((e.PlaybackPositionTicks ?? 0) > ThirtySecondsTicks)
                 lock (_lock) { _injectedSessions.Remove((sessionId, e.Item.Id)); }
             return;
         }
 
-        // Check whether the stopped item is the trailer we're currently tracking.
-        int currentIndex;
-        lock (_lock)
+        // A trailer stopped. Wait briefly to distinguish:
+        //   - User pressed Next  → PlaybackStart for next item will fire and update state.
+        //   - User pressed Back  → nothing fires → clean up (cancel timers).
+        var stoppedId = e.Item.Id;
+        _ = Task.Run(async () =>
         {
-            if (!_sessions.TryGetValue(sessionId, out var state)) return;
-            if (state.Queue[state.CurrentIndex].JellyfinItemId != e.Item.Id) return;
-            currentIndex = state.CurrentIndex;
-        }
-
-        _ = Task.Run(() => AdvanceSessionAsync(sessionId, currentIndex, e.Session));
+            await Task.Delay(2500).ConfigureAwait(false);
+            lock (_lock)
+            {
+                if (!_sessions.TryGetValue(sessionId, out var state)) return;
+                if (state.Queue[state.CurrentIndex].JellyfinItemId != stoppedId) return; // already advanced → OK
+                // Still on the stopped item → user pressed Back → abort
+                state.TimerCts.Cancel();
+                _sessions.Remove(sessionId);
+                _logger.LogInformation("TrailerCinema: user stopped trailer in session {S} — aborting.", sessionId);
+            }
+        });
     }
 
     private void OnPlaybackStart(object? sender, PlaybackProgressEventArgs e)
     {
-        if (e.Item is not Movie) return;
+        var sessionId = e.Session.Id;
 
-        lock (_lock)
+        if (e.Item is Movie)
         {
-            if (!_injectedSessions.Add((e.Session.Id, e.Item.Id))) return;
+            lock (_lock)
+            {
+                // Movie starting → cancel any pending trailer timers.
+                if (_sessions.TryGetValue(sessionId, out var old))
+                {
+                    old.TimerCts.Cancel();
+                    _sessions.Remove(sessionId);
+                }
+                if (!_injectedSessions.Add((sessionId, e.Item.Id))) return; // already injected → suppressed
+            }
+            _ = Task.Run(() => InjectTrailersAsync(e.Session, e.Item));
+            return;
         }
 
-        _ = Task.Run(() => InjectTrailersAsync(e.Session, e.Item));
+        if (e.Item is not Video) return;
+
+        // Update session state when the client starts one of our managed trailers
+        // (covers both auto-advance by the client and user pressing Next).
+        lock (_lock)
+        {
+            if (!_sessions.TryGetValue(sessionId, out var state)) return;
+
+            int newIndex = -1;
+            for (int i = 0; i < state.Queue.Count; i++)
+            {
+                if (state.Queue[i].JellyfinItemId == e.Item.Id) { newIndex = i; break; }
+            }
+            if (newIndex < 0) return; // not one of our trailers
+
+            // Cancel old timer, start fresh one for the newly playing trailer.
+            state.TimerCts.Cancel();
+            var newCts = new CancellationTokenSource();
+            _sessions[sessionId] = state with { CurrentIndex = newIndex, TimerCts = newCts };
+
+            ScheduleNextTrack(sessionId, state.Queue[newIndex], newCts.Token);
+        }
     }
 
-    // ── Injection flow ───────────────────────────────────────────────────────
+    // ── Injection ────────────────────────────────────────────────────────────
 
     private async Task InjectTrailersAsync(SessionInfo session, BaseItem movie)
     {
@@ -108,18 +142,21 @@ public class PlaybackHookService : IDisposable
 
             if (trailers.Count == 0)
             {
-                _logger.LogWarning(
-                    "TrailerCinema: no ready trailers in pool — skipping for '{Movie}'.", movie.Name);
+                _logger.LogWarning("TrailerCinema: no ready trailers — skipping for '{Movie}'.", movie.Name);
                 return;
             }
 
+            // Full queue: all trailers followed by the movie.
+            // Sending all items at once makes the client show navigation arrows
+            // so the user can press Next/Previous to skip trailers manually.
+            var cts    = new CancellationTokenSource();
+            var allIds = trailers.Select(t => t.JellyfinItemId).Append(movie.Id).ToArray();
+
             lock (_lock)
             {
-                if (_sessions.TryGetValue(session.Id, out var old)) old.TimerCts.Cancel();
-                _sessions[session.Id] = new SessionState(movie.Id, trailers, 0, new CancellationTokenSource());
+                _sessions[session.Id] = new SessionState(movie.Id, trailers, 0, cts);
             }
 
-            // Stop the movie that just started.
             await _sessionManager.SendPlaystateCommand(
                 session.Id, session.Id,
                 new PlaystateRequest { Command = PlaystateCommand.Stop },
@@ -127,7 +164,18 @@ public class PlaybackHookService : IDisposable
 
             await Task.Delay(800).ConfigureAwait(false);
 
-            await PlayTrailerAtIndexAsync(session, 0).ConfigureAwait(false);
+            await _sessionManager.SendPlayCommand(
+                session.Id, session.Id,
+                new PlayRequest { PlayCommand = PlayCommand.PlayNow, ItemIds = allIds, StartPositionTicks = 0 },
+                CancellationToken.None).ConfigureAwait(false);
+
+            // Bootstrap timer for the first trailer in case OnPlaybackStart doesn't fire
+            // (it will be cancelled and restarted by OnPlaybackStart when t1 actually begins).
+            ScheduleNextTrack(session.Id, trailers[0], cts.Token);
+
+            _logger.LogInformation(
+                "TrailerCinema: queued {N} trailer(s) + movie '{M}' for session {S}.",
+                trailers.Count, movie.Name, session.Id);
         }
         catch (Exception ex)
         {
@@ -141,98 +189,29 @@ public class PlaybackHookService : IDisposable
         }
     }
 
-    // ── Per-trailer play + timer fallback ────────────────────────────────────
+    // ── Timer fallback (NextTrack) ───────────────────────────────────────────
 
-    private async Task PlayTrailerAtIndexAsync(SessionInfo session, int index)
+    // Schedules a SendPlaystateCommand(NextTrack) after the trailer's duration + buffer.
+    // This fires if the client sticks on the last frame and never reports PlaybackStopped,
+    // which is a known bug in Jellyfin Android TV / Fire TV with ExoPlayer.
+    private void ScheduleNextTrack(string sessionId, TrailerInfo trailer, CancellationToken ct)
     {
-        TrailerInfo trailer;
-        CancellationToken timerCt;
-        lock (_lock)
-        {
-            if (!_sessions.TryGetValue(session.Id, out var state)) return;
-            if (index >= state.Queue.Count || state.CurrentIndex != index) return;
-            trailer = state.Queue[index];
-            timerCt = state.TimerCts.Token;
-        }
-
-        await _sessionManager.SendPlayCommand(
-            session.Id, session.Id,
-            new PlayRequest
-            {
-                PlayCommand        = PlayCommand.PlayNow,
-                ItemIds            = [trailer.JellyfinItemId],
-                StartPositionTicks = 0
-            },
-            CancellationToken.None).ConfigureAwait(false);
-
-        _logger.LogInformation(
-            "TrailerCinema: [{I}/{N}] '{Title}' ({Dur}s) → session {S}.",
-            index + 1, GetQueueCount(session.Id), trailer.Title, trailer.DurationMs / 1000, session.Id);
-
-        // Timer fallback: if PlaybackStopped never arrives (Fire TV sticks on the last frame),
-        // the server advances automatically after the known video duration + a safety buffer.
         var delayMs = trailer.DurationMs > 0 ? trailer.DurationMs + 12_000 : FallbackTimerMs;
 
         _ = Task.Run(async () =>
         {
             try
             {
-                await Task.Delay((int)Math.Min(delayMs, int.MaxValue), timerCt).ConfigureAwait(false);
+                await Task.Delay((int)Math.Min(delayMs, int.MaxValue), ct).ConfigureAwait(false);
                 _logger.LogInformation(
-                    "TrailerCinema: timer fallback fired for '{Title}' in session {S}.", trailer.Title, session.Id);
-                await AdvanceSessionAsync(session.Id, index, session).ConfigureAwait(false);
+                    "TrailerCinema: timer fallback — NextTrack after '{T}' in session {S}.", trailer.Title, sessionId);
+                await _sessionManager.SendPlaystateCommand(
+                    sessionId, sessionId,
+                    new PlaystateRequest { Command = PlaystateCommand.NextTrack },
+                    CancellationToken.None).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) { /* PlaybackStopped fired — timer not needed */ }
+            catch (OperationCanceledException) { /* client self-advanced or session ended */ }
         });
-    }
-
-    // ── Advance to next trailer or movie ─────────────────────────────────────
-
-    private async Task AdvanceSessionAsync(string sessionId, int expectedIndex, SessionInfo session)
-    {
-        Guid movieId;
-        bool playMovie;
-        int  nextIndex;
-
-        lock (_lock)
-        {
-            if (!_sessions.TryGetValue(sessionId, out var state)) return;
-            if (state.CurrentIndex != expectedIndex) return; // Already advanced by the other path.
-
-            state.TimerCts.Cancel();
-
-            nextIndex = expectedIndex + 1;
-            playMovie = nextIndex >= state.Queue.Count;
-            movieId   = state.MovieId;
-
-            if (!playMovie)
-                _sessions[sessionId] = state with { CurrentIndex = nextIndex, TimerCts = new CancellationTokenSource() };
-            else
-                _sessions.Remove(sessionId);
-        }
-
-        await Task.Delay(500).ConfigureAwait(false);
-
-        if (!playMovie)
-            await PlayTrailerAtIndexAsync(session, nextIndex).ConfigureAwait(false);
-        else
-            await PlayMovieAsync(session, movieId).ConfigureAwait(false);
-    }
-
-    private async Task PlayMovieAsync(SessionInfo session, Guid movieId)
-    {
-        await _sessionManager.SendPlayCommand(
-            session.Id, session.Id,
-            new PlayRequest { PlayCommand = PlayCommand.PlayNow, ItemIds = [movieId], StartPositionTicks = 0 },
-            CancellationToken.None).ConfigureAwait(false);
-
-        _logger.LogInformation("TrailerCinema: starting movie {Id} in session {S}.", movieId, session.Id);
-    }
-
-    private int GetQueueCount(string sessionId)
-    {
-        lock (_lock)
-            return _sessions.TryGetValue(sessionId, out var s) ? s.Queue.Count : 0;
     }
 
     // ── IDisposable ──────────────────────────────────────────────────────────
