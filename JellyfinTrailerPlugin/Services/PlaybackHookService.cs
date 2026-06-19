@@ -13,17 +13,19 @@ public class PlaybackHookService : IDisposable
     private readonly TrailerCacheService _cache;
     private readonly ILogger<PlaybackHookService> _logger;
 
-    // (sessionId, movieId) already injected — prevents re-injection when movie starts.
     private readonly HashSet<(string, Guid)> _injectedSessions = new();
 
     // Per-session state while trailers are playing.
-    // The full queue [t1…tN, movie] is sent via PlayNow so the client shows navigation arrows.
-    // CurrentIndex tracks which trailer is playing. TimerCts cancels the advance timer.
+    // ItemStartedAt is set by us (server clock) when the client reports PlaybackStart
+    // for a trailer. We use elapsed wall-clock time — not PlaybackPositionTicks from
+    // the client — to distinguish natural end from "user pressed Back", because
+    // Fire TV / Android TV often reports positionTicks = 0 on natural video end.
     private sealed record SessionState(
         Guid MovieId,
         IReadOnlyList<TrailerInfo> Queue,
         int CurrentIndex,
-        CancellationTokenSource TimerCts);
+        CancellationTokenSource TimerCts,
+        DateTime ItemStartedAt);
 
     private readonly Dictionary<string, SessionState> _sessions = new();
     private readonly object _lock = new();
@@ -70,22 +72,56 @@ public class PlaybackHookService : IDisposable
             return;
         }
 
-        // A trailer stopped explicitly (user pressed Back or Next).
-        // Wait 2.5 s: if PlaybackStart fires for the next item in that window the client
-        // self-advanced (Next was pressed) and state already updated → do nothing.
-        // If nothing fires → user pressed Back → cancel timers.
+        // A trailer stopped. We need to distinguish:
+        //   • Natural end  → the timer will advance the queue; do nothing.
+        //   • User Back    → cancel the timer so we don't start the next trailer.
+        //
+        // Fire TV / Android TV frequently reports positionTicks = 0 even when the
+        // video reached the end, so we cannot trust PlaybackPositionTicks here.
+        // Instead we compare the server-side wall-clock elapsed time against the
+        // known trailer duration.
         var stoppedId = e.Item.Id;
         _ = Task.Run(async () =>
         {
-            await Task.Delay(2500).ConfigureAwait(false);
+            long durationMs;
+            double elapsedMs;
+            int currentIdx;
+
             lock (_lock)
             {
                 if (!_sessions.TryGetValue(sessionId, out var state)) return;
-                if (state.Queue[state.CurrentIndex].JellyfinItemId != stoppedId) return; // already advanced
-                // Still on the stopped item → user pressed Back
+                int idx = IndexOf(state.Queue, stoppedId);
+                if (idx < 0 || state.CurrentIndex != idx) return;
+
+                durationMs  = state.Queue[idx].DurationMs;
+                elapsedMs   = (DateTime.UtcNow - state.ItemStartedAt).TotalMilliseconds;
+                currentIdx  = idx;
+            }
+
+            // If the video played for >= 75 % of its known duration this is a natural
+            // end — the timer will handle advancement, so bail out here.
+            if (durationMs > 0 && elapsedMs >= durationMs * 0.75)
+            {
+                _logger.LogDebug(
+                    "TrailerCinema: natural end for trailer [{I}] in session {S} (elapsed {E:F0} ms / {D} ms).",
+                    currentIdx, sessionId, elapsedMs, durationMs);
+                return;
+            }
+
+            // Elapsed < 75 % → user likely pressed Back or Next.
+            // Wait briefly: if the client moved to the next item (user pressed Next),
+            // OnPlaybackStart will have updated CurrentIndex and we should NOT cancel.
+            await Task.Delay(2500).ConfigureAwait(false);
+
+            lock (_lock)
+            {
+                if (!_sessions.TryGetValue(sessionId, out var state)) return;
+                if (state.Queue[state.CurrentIndex].JellyfinItemId != stoppedId) return; // already advanced → Next
+                // Still on the stopped item → user pressed Back → abort
                 state.TimerCts.Cancel();
                 _sessions.Remove(sessionId);
-                _logger.LogInformation("TrailerCinema: user pressed Back in session {S} — aborting.", sessionId);
+                _logger.LogInformation(
+                    "TrailerCinema: user pressed Back in session {S} — aborting trailer sequence.", sessionId);
             }
         });
     }
@@ -98,13 +134,12 @@ public class PlaybackHookService : IDisposable
         {
             lock (_lock)
             {
-                // Movie starting → cancel any pending trailer timer.
                 if (_sessions.TryGetValue(sessionId, out var old))
                 {
                     old.TimerCts.Cancel();
                     _sessions.Remove(sessionId);
                 }
-                if (!_injectedSessions.Add((sessionId, e.Item.Id))) return; // suppressed
+                if (!_injectedSessions.Add((sessionId, e.Item.Id))) return;
             }
             _ = Task.Run(() => InjectTrailersAsync(e.Session, e.Item));
             return;
@@ -112,18 +147,20 @@ public class PlaybackHookService : IDisposable
 
         if (e.Item is not Video) return;
 
-        // Client started one of our managed trailers (auto-advance or user pressed Next).
-        // Update CurrentIndex and reset the advance timer from the actual start of playback.
         lock (_lock)
         {
             if (!_sessions.TryGetValue(sessionId, out var state)) return;
-
             int newIndex = IndexOf(state.Queue, e.Item.Id);
-            if (newIndex < 0) return; // not one of our trailers
+            if (newIndex < 0) return;
 
             state.TimerCts.Cancel();
             var newCts = new CancellationTokenSource();
-            _sessions[sessionId] = state with { CurrentIndex = newIndex, TimerCts = newCts };
+            _sessions[sessionId] = state with
+            {
+                CurrentIndex  = newIndex,
+                TimerCts      = newCts,
+                ItemStartedAt = DateTime.UtcNow   // server clock; reliable even if client reports 0
+            };
 
             ScheduleAdvance(sessionId, newIndex, state.Queue, state.MovieId,
                 state.Queue[newIndex].DurationMs, newCts.Token);
@@ -147,12 +184,12 @@ public class PlaybackHookService : IDisposable
             }
 
             var cts    = new CancellationTokenSource();
-            // Full queue [t1, t2, …, tN, movie] → client shows navigation arrows for manual skip.
             var allIds = trailers.Select(t => t.JellyfinItemId).Append(movie.Id).ToArray();
 
             lock (_lock)
             {
-                _sessions[session.Id] = new SessionState(movie.Id, trailers, 0, cts);
+                _sessions[session.Id] = new SessionState(
+                    movie.Id, trailers, 0, cts, DateTime.UtcNow);
             }
 
             await _sessionManager.SendPlaystateCommand(
@@ -162,13 +199,15 @@ public class PlaybackHookService : IDisposable
 
             await Task.Delay(800).ConfigureAwait(false);
 
+            // Send full queue [t1 … tN, movie] so the client shows navigation arrows.
             await _sessionManager.SendPlayCommand(
                 session.Id, session.Id,
                 new PlayRequest { PlayCommand = PlayCommand.PlayNow, ItemIds = allIds, StartPositionTicks = 0 },
                 CancellationToken.None).ConfigureAwait(false);
 
-            // Bootstrap timer for the first trailer.
-            // OnPlaybackStart will cancel this and restart it once t1 actually begins playing.
+            // Bootstrap timer for t1. OnPlaybackStart will cancel this and restart it
+            // once the client actually reports that t1 has begun playing, giving us an
+            // accurate ItemStartedAt and a properly-reset timer.
             ScheduleAdvance(session.Id, 0, trailers, movie.Id, trailers[0].DurationMs, cts.Token);
 
             _logger.LogInformation(
@@ -187,12 +226,7 @@ public class PlaybackHookService : IDisposable
         }
     }
 
-    // ── Timer-based advance (PlayNow remaining queue) ────────────────────────
-    //
-    // Fire TV / Android TV often does not report PlaybackStopped when a video
-    // ends naturally (it sticks on the last frame). NextTrack is also unreliable
-    // on those clients. So after duration + buffer, we send PlayNow with the
-    // remaining items so the server drives queue progression.
+    // ── Timer-based advance ───────────────────────────────────────────────────
 
     private void ScheduleAdvance(
         string sessionId,
@@ -202,14 +236,13 @@ public class PlaybackHookService : IDisposable
         long durationMs,
         CancellationToken ct)
     {
-        // Fallback when ffprobe couldn't measure duration: use MaxDurationSeconds from config.
         var fallbackMs = (long)((Plugin.Instance?.Configuration.MaxDurationSeconds ?? 300) * 1000 + 15_000);
         var delayMs    = durationMs > 0 ? durationMs + 12_000 : fallbackMs;
 
         if (durationMs == 0)
             _logger.LogWarning(
-                "TrailerCinema: DurationMs=0 for trailer at index {I} — using {D}s fallback. " +
-                "Run a manual Refresh to populate durations.",
+                "TrailerCinema: trailer[{I}] has no duration — using {D}s fallback timer. " +
+                "Trigger a manual Refresh to populate durations.",
                 expectedIndex, delayMs / 1000);
 
         _ = Task.Run(async () =>
@@ -218,13 +251,11 @@ public class PlaybackHookService : IDisposable
             {
                 await Task.Delay((int)Math.Min(delayMs, int.MaxValue), ct).ConfigureAwait(false);
 
-                // Build the remaining queue (trailers after expectedIndex + movie).
-                // Sending PlayNow [remaining] is reliable on Fire TV; NextTrack is not.
                 Guid[]? remaining = null;
                 lock (_lock)
                 {
                     if (!_sessions.TryGetValue(sessionId, out var state)) return;
-                    if (state.CurrentIndex != expectedIndex) return; // already advanced by OnPlaybackStart
+                    if (state.CurrentIndex != expectedIndex) return; // already advanced
 
                     remaining = queue
                         .Skip(expectedIndex + 1)
@@ -236,15 +267,15 @@ public class PlaybackHookService : IDisposable
                 if (remaining is null) return;
 
                 _logger.LogInformation(
-                    "TrailerCinema: timer advance from index {I} — sending PlayNow [{R} item(s)] in session {S}.",
-                    expectedIndex, remaining.Length, sessionId);
+                    "TrailerCinema: timer → PlayNow [{R} item(s)] after trailer[{I}] in session {S}.",
+                    remaining.Length, expectedIndex, sessionId);
 
                 await _sessionManager.SendPlayCommand(
                     sessionId, sessionId,
                     new PlayRequest { PlayCommand = PlayCommand.PlayNow, ItemIds = remaining, StartPositionTicks = 0 },
                     CancellationToken.None).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) { /* OnPlaybackStart reset the timer or session ended */ }
+            catch (OperationCanceledException) { }
         });
     }
 
