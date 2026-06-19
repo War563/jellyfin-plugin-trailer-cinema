@@ -259,7 +259,7 @@ public class YtDlpService
 
         // Re-mux to embed chapters (stream-copy, very fast).
         var chapTmp = outputPath + ".chap.tmp.mp4";
-        var args = $"-y -i \"{inputPath}\" -i \"{metaPath}\" -map 0 -map_metadata 1 -c copy \"{chapTmp}\"";
+        var args = $"-y -i \"{inputPath}\" -i \"{metaPath}\" -map 0 -map_metadata 1 -c copy -movflags +faststart \"{chapTmp}\"";
         var psi  = new ProcessStartInfo
         {
             FileName = ffmpeg, Arguments = args,
@@ -335,7 +335,10 @@ public class YtDlpService
     private async Task<bool> RunFfmpegConcatAsync(
         string ffmpeg, string listPath, string outputPath, string codecArgs, CancellationToken ct)
     {
-        var args = $"-y -f concat -safe 0 -i \"{listPath}\" {codecArgs} \"{outputPath}\"";
+        // -movflags +faststart moves the moov atom to the beginning of the MP4.
+        // Without it the client (VLC) must HTTP-seek to the end of the file to find the
+        // index before it can seek within the video, which crashes VLC on large files.
+        var args = $"-y -f concat -safe 0 -i \"{listPath}\" {codecArgs} -movflags +faststart \"{outputPath}\"";
         var psi  = new ProcessStartInfo
         {
             FileName = ffmpeg, Arguments = args,
