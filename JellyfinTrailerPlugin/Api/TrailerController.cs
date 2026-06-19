@@ -18,8 +18,25 @@ public class TrailerController : ControllerBase
     }
 
     /// <summary>
-    /// Serves the local mp4 file for a trailer. Library items use this URL as their Path
-    /// so clients direct-play it. The local file is 1080p with merged audio.
+    /// Serves the pre-concatenated MP4 containing all selected trailers.
+    /// This is the item played before movies: VLC receives one file and plays all trailers in sequence.
+    /// Route must be declared before Stream/{videoId} so it takes precedence over the wildcard.
+    /// </summary>
+    [HttpGet("Stream/combined")]
+    [AllowAnonymous]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public IActionResult StreamCombined()
+    {
+        var path = _cache.GetCombinedPath();
+        if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path))
+            return NotFound();
+
+        return PhysicalFile(path, "video/mp4", enableRangeProcessing: true);
+    }
+
+    /// <summary>
+    /// Serves the local mp4 file for a single trailer (individual items in the library catalog).
     /// </summary>
     [HttpGet("Stream/{videoId}")]
     [AllowAnonymous]

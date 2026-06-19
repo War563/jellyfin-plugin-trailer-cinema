@@ -127,29 +127,105 @@ public class YtDlpService
         }
     }
 
-    private static string GetFfmpegLocationArg()
+    /// <summary>Returns the ffmpeg executable path, or null if not found.</summary>
+    public string? GetFfmpegPath()
     {
-        // Explicit override in plugin config wins.
         var configured = Plugin.Instance?.Configuration.FfmpegPath?.Trim();
         if (!string.IsNullOrEmpty(configured) && File.Exists(configured))
-            return $"--ffmpeg-location \"{configured}\"";
+            return configured;
 
-        // Common Jellyfin-FFmpeg paths (Linux).
         string[] candidates =
         [
             "/usr/lib/jellyfin-ffmpeg/ffmpeg",
             "/usr/local/bin/ffmpeg",
             "/usr/bin/ffmpeg",
         ];
+        return candidates.FirstOrDefault(File.Exists);
+    }
 
-        foreach (var c in candidates)
+    private string GetFfmpegLocationArg()
+    {
+        var path = GetFfmpegPath();
+        return path is not null ? $"--ffmpeg-location \"{path}\"" : string.Empty;
+    }
+
+    /// <summary>
+    /// Concatenates <paramref name="inputPaths"/> into a single MP4 at <paramref name="outputPath"/>
+    /// using the ffmpeg concat demuxer. Tries stream-copy first; falls back to H.264/AAC re-encode
+    /// if codecs differ across files.
+    /// </summary>
+    public async Task ConcatenateAsync(IReadOnlyList<string> inputPaths, string outputPath, CancellationToken ct)
+    {
+        if (inputPaths.Count == 0) return;
+
+        var ffmpeg = GetFfmpegPath();
+        if (ffmpeg is null)
         {
-            if (File.Exists(c))
-                return $"--ffmpeg-location \"{c}\"";
+            _logger.LogWarning("TrailerCinema: ffmpeg not found — cannot build combined trailer.");
+            return;
         }
 
-        // Let yt-dlp find ffmpeg in PATH (Windows or custom installations).
-        return string.Empty;
+        // ffmpeg concat demuxer requires a text file listing inputs.
+        var listPath = outputPath + ".list.txt";
+        var tmpPath  = outputPath + ".tmp.mp4";
+        await File.WriteAllLinesAsync(listPath, inputPaths.Select(p => $"file '{p.Replace("'", "'\\''")}' "), ct)
+            .ConfigureAwait(false);
+
+        try
+        {
+            // Try fast stream-copy; fall back to re-encode if exit != 0.
+            if (!await RunFfmpegConcatAsync(ffmpeg, listPath, tmpPath, "-c copy", ct).ConfigureAwait(false))
+            {
+                _logger.LogWarning("TrailerCinema: concat -c copy failed — retrying with re-encode.");
+                if (!await RunFfmpegConcatAsync(ffmpeg, listPath, tmpPath, "-c:v libx264 -c:a aac -preset fast", ct).ConfigureAwait(false))
+                {
+                    _logger.LogError("TrailerCinema: ffmpeg concat failed even with re-encode.");
+                    return;
+                }
+            }
+
+            File.Move(tmpPath, outputPath, overwrite: true);
+            _logger.LogInformation("TrailerCinema: combined trailer built → {Path}.", outputPath);
+        }
+        finally
+        {
+            try { File.Delete(listPath); } catch { /* best-effort */ }
+            try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { }
+        }
+    }
+
+    private async Task<bool> RunFfmpegConcatAsync(
+        string ffmpeg, string listPath, string outputPath, string codecArgs, CancellationToken ct)
+    {
+        var args = $"-y -f concat -safe 0 -i \"{listPath}\" {codecArgs} \"{outputPath}\"";
+        var psi  = new ProcessStartInfo
+        {
+            FileName = ffmpeg, Arguments = args,
+            RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true
+        };
+
+        try
+        {
+            using var proc = Process.Start(psi)
+                ?? throw new InvalidOperationException("Could not start ffmpeg.");
+
+            var stderr = await proc.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
+            await proc.WaitForExitAsync(ct).ConfigureAwait(false);
+
+            if (proc.ExitCode != 0)
+            {
+                var tail = stderr.Length > 300 ? stderr[^300..] : stderr;
+                _logger.LogWarning("TrailerCinema: ffmpeg concat exit {Code}: {Err}", proc.ExitCode, tail);
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "TrailerCinema: ffmpeg process error.");
+            return false;
+        }
     }
 
     private async Task<string> GetYtDlpPathAsync(CancellationToken ct)

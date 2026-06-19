@@ -14,6 +14,9 @@ public class TrailerLibraryService
 {
     private static readonly Guid FolderGuid = new("c1a2b3d4-e5f6-7890-abcd-ef1234567890");
 
+    /// <summary>Fixed ID for the single combined-trailers item used when injecting before movies.</summary>
+    public static readonly Guid CombinedItemGuid = new("feed1234-cafe-babe-dead-000000000001");
+
     private readonly ILibraryManager _libraryManager;
     private readonly ILogger<TrailerLibraryService> _logger;
 
@@ -67,6 +70,37 @@ public class TrailerLibraryService
             _libraryManager.CreateItem(video, folder);
             _logger.LogDebug("TrailerCinema: synced item {Id} → {Url}.", itemId, proxyUrl);
         }
+    }
+
+    /// <summary>
+    /// Creates or updates the single "combined trailers" library item whose stream is
+    /// the pre-concatenated MP4 served by /TrailerCinema/Stream/combined.
+    /// </summary>
+    public void SyncCombinedItem(string serverBaseUrl)
+    {
+        var folder   = EnsureFolder();
+        var proxyUrl = $"{serverBaseUrl.TrimEnd('/')}/TrailerCinema/Stream/combined";
+
+        var existing = _libraryManager.GetItemById(CombinedItemGuid);
+        if (existing is not null && existing.Path == proxyUrl && !existing.IsVirtualItem)
+            return;
+
+        if (existing is not null)
+            _libraryManager.DeleteItem(existing, new DeleteOptions { DeleteFileLocation = false }, false);
+
+        var video = new Video
+        {
+            Id            = CombinedItemGuid,
+            Name          = "Trailer Cinema",
+            Path          = proxyUrl,
+            IsVirtualItem = false,
+            DateCreated   = DateTime.UtcNow,
+            DateModified  = DateTime.UtcNow,
+            Container     = "mp4"
+        };
+
+        _libraryManager.CreateItem(video, folder);
+        _logger.LogInformation("TrailerCinema: synced combined item → {Url}.", proxyUrl);
     }
 
     private Folder EnsureFolder()

@@ -15,6 +15,7 @@ public class TrailerCacheService
     private readonly SemaphoreSlim _lock = new(1, 1);
     private List<TrailerInfo> _pool = new();
     private DateTime _lastRefresh = DateTime.MinValue;
+    private volatile string? _combinedPath;
 
     public TrailerCacheService(
         YouTubeService youTubeService,
@@ -33,16 +34,20 @@ public class TrailerCacheService
     public int PoolCount => _pool.Count;
     public DateTime LastRefresh => _lastRefresh;
 
+    public string? GetCombinedPath() => _combinedPath;
+    public bool IsCombinedReady() => _combinedPath is not null && File.Exists(_combinedPath);
+
     /// <summary>
-    /// Full pool refresh: fetches titles from YouTube, downloads mp4 files locally
-    /// (skipping files already on disk), then syncs Jellyfin library items.
+    /// Full pool refresh: fetches titles from YouTube, downloads mp4 files locally,
+    /// concatenates TrailerCount trailers into a single combined file for VLC compatibility,
+    /// then syncs Jellyfin library items.
     /// </summary>
     public async Task RefreshAsync(PluginConfiguration config, CancellationToken ct)
     {
         await _lock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            _logger.LogInformation("TrailerCinema: starting pool refresh (download dir: {Dir}).", _downloadDir);
+            _logger.LogInformation("TrailerCinema: starting pool refresh (dir: {Dir}).", _downloadDir);
             Directory.CreateDirectory(_downloadDir);
 
             var fresh = await _youTubeService.GetTrailersAsync(config, ct).ConfigureAwait(false);
@@ -55,16 +60,36 @@ public class TrailerCacheService
             await _ytDlpService.DownloadTrailersAsync(fresh, _downloadDir, ct).ConfigureAwait(false);
 
             var valid = fresh.Where(t => t.IsReady).ToList();
-            _pool = valid;
+            _pool        = valid;
             _lastRefresh = DateTime.UtcNow;
+
+            // Build a single combined MP4 (TrailerCount trailers in sequence).
+            // This is played via VLC as one file, avoiding VLC's inability to advance Jellyfin queues.
+            var selected = (config.Shuffle
+                    ? valid.OrderBy(_ => Random.Shared.Next()).ToList()
+                    : valid)
+                .Take(config.TrailerCount)
+                .ToList();
+
+            var combinedPath = Path.Combine(_downloadDir, "combined_trailers.mp4");
+            await _ytDlpService.ConcatenateAsync(
+                selected.Select(t => t.LocalPath).ToList(),
+                combinedPath,
+                ct).ConfigureAwait(false);
+
+            _combinedPath = File.Exists(combinedPath) ? combinedPath : null;
 
             var serverBaseUrl = config.ServerBaseUrl;
             _libraryService.SyncItems(valid, serverBaseUrl);
+
+            if (_combinedPath is not null)
+                _libraryService.SyncCombinedItem(serverBaseUrl);
+
             CleanupStaleFiles(valid);
 
             _logger.LogInformation(
-                "TrailerCinema: pool refreshed — {Valid}/{Total} trailers ready.",
-                valid.Count, fresh.Count);
+                "TrailerCinema: pool refreshed — {Valid}/{Total} trailers ready, combined={Combined}.",
+                valid.Count, fresh.Count, _combinedPath is not null ? "yes" : "no");
         }
         finally
         {
@@ -90,8 +115,13 @@ public class TrailerCacheService
 
         foreach (var file in Directory.GetFiles(_downloadDir, "*.mp4"))
         {
-            var videoId = Path.GetFileNameWithoutExtension(file);
-            if (!currentIds.Contains(videoId))
+            var name = Path.GetFileNameWithoutExtension(file);
+
+            // Never delete the combined file — it's rebuilt each refresh, not tied to a video ID.
+            if (name.StartsWith("combined_", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (!currentIds.Contains(name))
             {
                 try
                 {
