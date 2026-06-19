@@ -150,13 +150,30 @@ public class YtDlpService
     }
 
     /// <summary>
-    /// Concatenates <paramref name="inputPaths"/> into a single MP4 at <paramref name="outputPath"/>
-    /// using the ffmpeg concat demuxer. Tries stream-copy first; falls back to H.264/AAC re-encode
-    /// if codecs differ across files.
+    /// Returns the ffprobe binary path (same directory as ffmpeg), or null if not found.
     /// </summary>
-    public async Task ConcatenateAsync(IReadOnlyList<string> inputPaths, string outputPath, CancellationToken ct)
+    public string? GetFfprobePath()
     {
-        if (inputPaths.Count == 0) return;
+        var ffmpegPath = GetFfmpegPath();
+        if (ffmpegPath is not null)
+        {
+            var probe = Path.Combine(Path.GetDirectoryName(ffmpegPath) ?? "", "ffprobe");
+            if (File.Exists(probe)) return probe;
+        }
+        return IsAvailable("ffprobe") ? "ffprobe" : null;
+    }
+
+    /// <summary>
+    /// Concatenates trailers into a single MP4 with chapter markers so that VLC
+    /// displays each trailer's title as the video advances through chapters.
+    /// Accepts a list of (localPath, title) pairs. Tries stream-copy; falls back to re-encode.
+    /// </summary>
+    public async Task ConcatenateAsync(
+        IReadOnlyList<(string Path, string Title)> inputs,
+        string outputPath,
+        CancellationToken ct)
+    {
+        if (inputs.Count == 0) return;
 
         var ffmpeg = GetFfmpegPath();
         if (ffmpeg is null)
@@ -165,15 +182,16 @@ public class YtDlpService
             return;
         }
 
-        // ffmpeg concat demuxer requires a text file listing inputs.
         var listPath = outputPath + ".list.txt";
         var tmpPath  = outputPath + ".tmp.mp4";
-        await File.WriteAllLinesAsync(listPath, inputPaths.Select(p => $"file '{p.Replace("'", "'\\''")}' "), ct)
-            .ConfigureAwait(false);
+
+        await File.WriteAllLinesAsync(
+            listPath,
+            inputs.Select(i => $"file '{i.Path.Replace("'", "'\\''")}' "),
+            ct).ConfigureAwait(false);
 
         try
         {
-            // Try fast stream-copy; fall back to re-encode if exit != 0.
             if (!await RunFfmpegConcatAsync(ffmpeg, listPath, tmpPath, "-c copy", ct).ConfigureAwait(false))
             {
                 _logger.LogWarning("TrailerCinema: concat -c copy failed — retrying with re-encode.");
@@ -184,15 +202,135 @@ public class YtDlpService
                 }
             }
 
-            File.Move(tmpPath, outputPath, overwrite: true);
-            _logger.LogInformation("TrailerCinema: combined trailer built → {Path}.", outputPath);
+            // Embed chapter markers so each trailer's title is visible in VLC and Jellyfin.
+            var added = await AddChaptersAsync(ffmpeg, tmpPath, inputs, outputPath, ct).ConfigureAwait(false);
+            if (!added)
+                File.Move(tmpPath, outputPath, overwrite: true);
+
+            _logger.LogInformation("TrailerCinema: combined trailer ({N} trailers, chapters={Ch}) → {Path}.",
+                inputs.Count, added, outputPath);
         }
         finally
         {
-            try { File.Delete(listPath); } catch { /* best-effort */ }
+            try { File.Delete(listPath); } catch { }
             try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { }
         }
     }
+
+    private async Task<bool> AddChaptersAsync(
+        string ffmpeg,
+        string inputPath,
+        IReadOnlyList<(string Path, string Title)> inputs,
+        string outputPath,
+        CancellationToken ct)
+    {
+        var ffprobe = GetFfprobePath();
+        if (ffprobe is null)
+        {
+            _logger.LogDebug("TrailerCinema: ffprobe not found — skipping chapter markers.");
+            return false;
+        }
+
+        // Get each trailer's duration to compute chapter boundaries.
+        var chapters = new List<(long StartMs, long EndMs, string Title)>();
+        long elapsed = 0;
+
+        foreach (var (path, title) in inputs)
+        {
+            var ms = await GetDurationMsAsync(ffprobe, path, ct).ConfigureAwait(false);
+            if (ms <= 0) return false;
+            chapters.Add((elapsed, elapsed + ms, title));
+            elapsed += ms;
+        }
+
+        // Build ffmetadata file.
+        var metaPath = outputPath + ".meta.txt";
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine(";FFMETADATA1");
+        foreach (var (startMs, endMs, title) in chapters)
+        {
+            sb.AppendLine("[CHAPTER]");
+            sb.AppendLine("TIMEBASE=1/1000");
+            sb.AppendLine($"START={startMs}");
+            sb.AppendLine($"END={endMs}");
+            sb.Append("title=").AppendLine(EscapeMetadata(title));
+        }
+        await File.WriteAllTextAsync(metaPath, sb.ToString(), ct).ConfigureAwait(false);
+
+        // Re-mux to embed chapters (stream-copy, very fast).
+        var chapTmp = outputPath + ".chap.tmp.mp4";
+        var args = $"-y -i \"{inputPath}\" -i \"{metaPath}\" -map 0 -map_metadata 1 -c copy \"{chapTmp}\"";
+        var psi  = new ProcessStartInfo
+        {
+            FileName = ffmpeg, Arguments = args,
+            RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true
+        };
+
+        try
+        {
+            using var proc = Process.Start(psi) ?? throw new InvalidOperationException("Cannot start ffmpeg.");
+            var stderr = await proc.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
+            await proc.WaitForExitAsync(ct).ConfigureAwait(false);
+
+            if (proc.ExitCode != 0)
+            {
+                var tail = stderr.Length > 200 ? stderr[^200..] : stderr;
+                _logger.LogWarning("TrailerCinema: chapter mux failed: {Err}", tail);
+                return false;
+            }
+
+            File.Move(chapTmp, outputPath, overwrite: true);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "TrailerCinema: chapter mux process error.");
+            return false;
+        }
+        finally
+        {
+            try { File.Delete(metaPath); } catch { }
+            try { if (File.Exists(chapTmp)) File.Delete(chapTmp); } catch { }
+        }
+    }
+
+    private async Task<long> GetDurationMsAsync(string ffprobe, string filePath, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = ffprobe,
+            Arguments = $"-i \"{filePath}\" -show_entries format=duration -v quiet -of csv=p=0",
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        try
+        {
+            using var proc = Process.Start(psi) ?? throw new InvalidOperationException();
+            var output = await proc.StandardOutput.ReadToEndAsync(ct).ConfigureAwait(false);
+            await proc.WaitForExitAsync(ct).ConfigureAwait(false);
+
+            if (double.TryParse(output.Trim(),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var secs))
+                return (long)(secs * 1000);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "TrailerCinema: ffprobe failed for {File}.", filePath);
+        }
+
+        return 0;
+    }
+
+    private static string EscapeMetadata(string s)
+        => s.Replace("\\", "\\\\")
+            .Replace("=", "\\=")
+            .Replace(";", "\\;")
+            .Replace("#", "\\#")
+            .Replace("\n", " ");
 
     private async Task<bool> RunFfmpegConcatAsync(
         string ffmpeg, string listPath, string outputPath, string codecArgs, CancellationToken ct)

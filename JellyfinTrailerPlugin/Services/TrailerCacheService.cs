@@ -73,7 +73,7 @@ public class TrailerCacheService
 
             var combinedPath = Path.Combine(_downloadDir, "combined_trailers.mp4");
             await _ytDlpService.ConcatenateAsync(
-                selected.Select(t => t.LocalPath).ToList(),
+                selected.Select(t => (t.LocalPath, t.Title)).ToList(),
                 combinedPath,
                 ct).ConfigureAwait(false);
 
