@@ -106,6 +106,17 @@ public class TrailerCacheService
 
     public List<TrailerInfo> GetAllCached() => new(_pool);
 
+    /// <summary>
+    /// Returns up to <paramref name="count"/> ready trailers in a fresh random order.
+    /// Called on every movie-play so each injection has a different selection.
+    /// </summary>
+    public IReadOnlyList<TrailerInfo> GetRandomTrailers(int count)
+        => _pool
+            .Where(t => t.IsReady)
+            .OrderBy(_ => Random.Shared.Next())
+            .Take(count)
+            .ToList();
+
     private void CleanupStaleFiles(IReadOnlyList<TrailerInfo> currentPool)
     {
         if (!Directory.Exists(_downloadDir))

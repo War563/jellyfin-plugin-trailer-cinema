@@ -10,6 +10,9 @@ public class TrailerInfo
 
     public DateTime DownloadedAt { get; set; } = DateTime.MinValue;
 
+    /// <summary>Duration in milliseconds; used to drive the timer-based fallback in PlaybackHookService.</summary>
+    public long DurationMs { get; set; }
+
     /// <summary>Jellyfin library item Guid assigned by TrailerLibraryService.</summary>
     public Guid JellyfinItemId { get; set; }
 

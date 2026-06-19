@@ -41,6 +41,8 @@ public class YtDlpService
             trailer.LocalPath = outputPath;
             if (trailer.DownloadedAt == DateTime.MinValue)
                 trailer.DownloadedAt = File.GetLastWriteTimeUtc(outputPath);
+            if (trailer.DurationMs == 0)
+                trailer.DurationMs = await GetDurationForTrailerAsync(outputPath, ct).ConfigureAwait(false);
             return;
         }
 
@@ -59,8 +61,9 @@ public class YtDlpService
 
             if (File.Exists(outputPath))
             {
-                trailer.LocalPath = outputPath;
+                trailer.LocalPath    = outputPath;
                 trailer.DownloadedAt = DateTime.UtcNow;
+                trailer.DurationMs   = await GetDurationForTrailerAsync(outputPath, ct).ConfigureAwait(false);
                 _logger.LogInformation("TrailerCinema: downloaded '{Title}' ({Id}).", trailer.Title, trailer.VideoId);
             }
             else
@@ -292,6 +295,12 @@ public class YtDlpService
             try { File.Delete(metaPath); } catch { }
             try { if (File.Exists(chapTmp)) File.Delete(chapTmp); } catch { }
         }
+    }
+
+    private async Task<long> GetDurationForTrailerAsync(string filePath, CancellationToken ct)
+    {
+        var ffprobe = GetFfprobePath();
+        return ffprobe is null ? 0 : await GetDurationMsAsync(ffprobe, filePath, ct).ConfigureAwait(false);
     }
 
     private async Task<long> GetDurationMsAsync(string ffprobe, string filePath, CancellationToken ct)
