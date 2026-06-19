@@ -237,7 +237,7 @@ public class PlaybackHookService : IDisposable
         CancellationToken ct)
     {
         var fallbackMs = (long)((Plugin.Instance?.Configuration.MaxDurationSeconds ?? 300) * 1000 + 15_000);
-        var delayMs    = durationMs > 0 ? durationMs + 12_000 : fallbackMs;
+        var delayMs    = durationMs > 0 ? durationMs + 3_000 : fallbackMs;
 
         if (durationMs == 0)
             _logger.LogWarning(
