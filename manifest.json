@@ -9,6 +9,14 @@
     "owner": "War563",
     "versions": [
       {
+        "version": "1.1.29.0",
+        "changelog": "fix: reduce inter-trailer gap from 12 s to 3 s\n\nThe timer fires durationMs + buffer ms after playback starts.\n12 s was noticeably long on Fire TV (video ends, 12 s of frozen last\nframe, then next item starts). 3 s is enough to absorb network round-trip\nand minor ffprobe duration drift while keeping the transition fluid.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/War563/jellyfin-plugin-trailer-cinema/releases/download/v1.1.29/JellyfinTrailerPlugin_1.1.29.zip",
+        "checksum": "cda614abf60534bd6ec79f2ddcdd89c8",
+        "timestamp": "2026-06-19T17:33:41Z"
+      },
+      {
         "version": "1.1.28.0",
         "changelog": "fix: use server-side elapsed time to detect natural end vs Back press\n\nFire TV / Android TV frequently reports PlaybackPositionTicks = 0 even when\na video finishes naturally (the player sticks on the last frame). The previous\nheuristic waited 2.5 s and, if no advancement was seen, concluded the user had\npressed Back and cancelled the timer. On Fire TV this meant the timer was always\ncancelled on natural end, so the second trailer (and movie) never played.\n\nRoot cause: we were trusting a client-reported field that is unreliable on\nExoPlayer-based clients.\n\nFix: track server-side wall-clock time (ItemStartedAt) from when the client\nreports PlaybackStart for a trailer. When PlaybackStopped fires we compare\nelapsed time against the known DurationMs:\n  \u2022 elapsed >= 75 % of duration \u2192 natural end \u2192 let the timer advance, done.\n  \u2022 elapsed < 75 %              \u2192 Back/Next \u2192 wait 2.5 s; if still on same\n                                  item \u2192 user pressed Back \u2192 cancel timer.\n\nThis distinguishes natural end from an early exit regardless of what\npositionTicks the client reports. The skip-trailer (Next) path is unchanged:\nPlaybackStart for the next item updates CurrentIndex within 2.5 s so the\ncancel-check sees advancement and leaves the timer alone.",
         "targetAbi": "10.11.0.0",
