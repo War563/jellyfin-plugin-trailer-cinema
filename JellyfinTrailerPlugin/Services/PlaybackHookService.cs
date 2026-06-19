@@ -1,6 +1,5 @@
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
-using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Session;
 using MediaBrowser.Model.Session;
 using Microsoft.Extensions.Logging;
@@ -13,11 +12,13 @@ public class PlaybackHookService : IDisposable
     private readonly TrailerCacheService _cache;
     private readonly ILogger<PlaybackHookService> _logger;
 
-    // (sessionId, movieId) pairs where trailers have been injected.
-    // Prevents re-injection if the client briefly restarts playback.
+    // (sessionId, movieId) → trailers already injected. Prevents re-injection.
     private readonly HashSet<(string, Guid)> _injectedSessions = new();
-    private readonly object _lock = new();
 
+    // sessionId → movieId to play once the combined trailer file finishes.
+    private readonly Dictionary<string, Guid> _pendingMovies = new();
+
+    private readonly object _lock = new();
     private static readonly long ThirtySecondsTicks = TimeSpan.FromSeconds(30).Ticks;
 
     public PlaybackHookService(
@@ -39,21 +40,56 @@ public class PlaybackHookService : IDisposable
         lock (_lock)
         {
             _injectedSessions.RemoveWhere(k => k.Item1 == e.SessionInfo.Id);
+            _pendingMovies.Remove(e.SessionInfo.Id);
         }
     }
 
     private void OnPlaybackStopped(object? sender, PlaybackStopEventArgs e)
     {
-        if (e.Item is not Movie) return;
-
-        // Clear suppression after a genuine viewing so trailers re-inject next time.
-        if ((e.PlaybackPositionTicks ?? 0) > ThirtySecondsTicks)
+        // Movie stopped: clear suppression after a genuine viewing so trailers re-inject next time.
+        if (e.Item is Movie)
         {
+            if ((e.PlaybackPositionTicks ?? 0) > ThirtySecondsTicks)
+            {
+                lock (_lock)
+                {
+                    _injectedSessions.Remove((e.Session.Id, e.Item.Id));
+                }
+            }
+            return;
+        }
+
+        // Combined trailer finished: play the queued movie.
+        // Neither Android TV nor VLC advance the Jellyfin queue client-side,
+        // so the server must push PlayNow [movie] explicitly.
+        if (e.Item.Id == TrailerLibraryService.CombinedItemGuid)
+        {
+            Guid movieId;
             lock (_lock)
             {
-                _injectedSessions.Remove((e.Session.Id, e.Item.Id));
+                if (!_pendingMovies.TryGetValue(e.Session.Id, out movieId))
+                    return;
+                _pendingMovies.Remove(e.Session.Id);
             }
+
+            _logger.LogInformation(
+                "TrailerCinema: combined trailer finished — starting movie {Id} in session {S}.",
+                movieId, e.Session.Id);
+
+            _ = Task.Run(() => PlayMovieAsync(e.Session, movieId));
         }
+    }
+
+    private async Task PlayMovieAsync(SessionInfo session, Guid movieId)
+    {
+        // Brief pause so the player settles before the next command.
+        await Task.Delay(600).ConfigureAwait(false);
+
+        await _sessionManager.SendPlayCommand(
+            session.Id,
+            session.Id,
+            new PlayRequest { PlayCommand = PlayCommand.PlayNow, ItemIds = [movieId], StartPositionTicks = 0 },
+            CancellationToken.None).ConfigureAwait(false);
     }
 
     private void OnPlaybackStart(object? sender, PlaybackProgressEventArgs e)
@@ -76,8 +112,14 @@ public class PlaybackHookService : IDisposable
             if (!_cache.IsCombinedReady())
             {
                 _logger.LogWarning(
-                    "TrailerCinema: combined trailer not ready yet — skipping for '{Movie}'.", movie.Name);
+                    "TrailerCinema: combined trailer not ready — skipping for '{Movie}'.", movie.Name);
                 return;
+            }
+
+            // Register the movie to play once the combined trailer stops.
+            lock (_lock)
+            {
+                _pendingMovies[session.Id] = movie.Id;
             }
 
             // Stop the movie that just started.
@@ -89,33 +131,31 @@ public class PlaybackHookService : IDisposable
 
             await Task.Delay(800).ConfigureAwait(false);
 
-            // Play [combined_trailers, movie].
-            // The combined file contains all selected trailers as one MP4 —
-            // VLC plays the file start-to-finish, then the client advances to the movie.
-            var itemIds = new[] { TrailerLibraryService.CombinedItemGuid, movie.Id };
-
+            // Play ONLY the combined trailer file. When it finishes, OnPlaybackStopped
+            // fires and PlayMovieAsync sends PlayNow [movie] to the client.
             await _sessionManager.SendPlayCommand(
                 session.Id,
                 session.Id,
                 new PlayRequest
                 {
                     PlayCommand        = PlayCommand.PlayNow,
-                    ItemIds            = itemIds,
+                    ItemIds            = [TrailerLibraryService.CombinedItemGuid],
                     StartPositionTicks = 0
                 },
                 CancellationToken.None).ConfigureAwait(false);
 
             _logger.LogInformation(
-                "TrailerCinema: queued combined trailer before '{Movie}' in session {S}.",
+                "TrailerCinema: playing combined trailer before '{Movie}' in session {S}.",
                 movie.Name, session.Id);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "TrailerCinema: error injecting trailers for session {S}.", session.Id);
+            _logger.LogError(ex, "TrailerCinema: error for session {S}.", session.Id);
 
             lock (_lock)
             {
                 _injectedSessions.Remove((session.Id, movie.Id));
+                _pendingMovies.Remove(session.Id);
             }
         }
     }
