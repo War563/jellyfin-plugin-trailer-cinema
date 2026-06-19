@@ -60,6 +60,37 @@ jobs:
           MD5=$(md5sum "$ZIP_NAME" | awk '{print $1}')
           echo "md5=$MD5" >> $GITHUB_OUTPUT
 
+      - name: Prepare changelog and release notes
+        run: |
+          python3 - <<'EOF'
+          import subprocess, os
+
+          msg = subprocess.check_output(['git', 'log', '-1', '--pretty=%B']).decode('utf-8', errors='replace')
+
+          # Strip Co-Authored-By trailers and trailing blank lines
+          lines = [l for l in msg.splitlines() if not l.startswith('Co-Authored-By:')]
+          while lines and not lines[-1].strip():
+              lines.pop()
+          changelog = '\n'.join(lines).strip()[:3000]
+
+          with open('changelog.txt', 'w') as f:
+              f.write(changelog)
+
+          # Markdown body for the GitHub Release page
+          repo  = os.environ['GITHUB_REPOSITORY']
+          ver   = os.environ['VERSION']
+          body  = f"## Trailer Cinema {ver}\n\n{changelog}\n\n---\n\n"
+          body += "### Instalación\n"
+          body += "Añade el repositorio en Jellyfin → Dashboard → Plugins → Repositorios:\n"
+          body += f"```\nhttps://raw.githubusercontent.com/{repo}/main/manifest.json\n```\n"
+          with open('release_notes.md', 'w') as f:
+              f.write(body)
+
+          print(f"changelog.txt ({len(changelog)} chars) and release_notes.md written.")
+          EOF
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+
       - name: Update manifest.json
         run: |
           python3 - <<'EOF'
@@ -75,12 +106,15 @@ jobs:
           source_url = f"https://github.com/{repo}/releases/download/{tag}/{zip_name}"
           timestamp  = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
+          with open("changelog.txt") as f:
+              changelog = f.read().strip() or f"Release {version}."
+
           with open("manifest.json") as f:
               manifest = json.load(f)
 
           new_entry = {
               "version":   dotnet_v,
-              "changelog": f"Release {version}.",
+              "changelog": changelog,
               "targetAbi": "10.11.0.0",
               "sourceUrl": source_url,
               "checksum":  checksum,
@@ -117,13 +151,6 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: Trailer Cinema ${{ steps.version.outputs.version }}
-          body: |
-            ## Trailer Cinema ${{ steps.version.outputs.version }}
-
-            ### Instalación
-            Añade el siguiente repositorio en Jellyfin → Dashboard → Plugins → Repositorios:
-            ```
-            https://raw.githubusercontent.com/${{ github.repository }}/main/manifest.json
-            ```
+          body_path: release_notes.md
           files: ${{ env.ZIP_NAME }}
           fail_on_unmatched_files: true
