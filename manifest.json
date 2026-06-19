@@ -9,6 +9,14 @@
     "owner": "War563",
     "versions": [
       {
+        "version": "1.1.27.0",
+        "changelog": "fix: use PlayNow[remaining] instead of NextTrack for timer advance\n\nNextTrack is not reliably implemented in the Jellyfin Fire TV / Android TV\nclient. Replace the timer action with PlayNow[t_next..tN, movie] which\nsends the remaining queue as a new play command \u2014 the same mechanism that\nsuccessfully starts the first trailer, so it is known to work.\n\nAlso lower the fallback timer when DurationMs=0: instead of a fixed 15 min\n(triggered when ffprobe was not yet run), use MaxDurationSeconds * 1000 + 15s\nfrom plugin config (default ~315 s). A log warning is emitted so the user\nknows to trigger a manual Refresh to populate trailer durations.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/War563/jellyfin-plugin-trailer-cinema/releases/download/v1.1.27/JellyfinTrailerPlugin_1.1.27.zip",
+        "checksum": "cde61988de1427b725eb43176691ed56",
+        "timestamp": "2026-06-19T16:52:30Z"
+      },
+      {
         "version": "1.1.26.0",
         "changelog": "feat: send full trailer+movie queue so client shows skip button\n\nPreviously each trailer was sent as a separate PlayNow, leaving only\n1 item in the client queue \u2014 no navigation arrows were visible.\n\nNew flow:\n- InjectTrailersAsync sends PlayNow [t1, t2, ..., tN, movie] in one\n  command. Jellyfin Android TV / Fire TV shows Next/Previous arrows,\n  giving the user a visible skip button.\n- Timer fallback now sends PlaystateCommand.NextTrack (advance queue)\n  instead of a new PlayNow, so the existing queue is preserved.\n- OnPlaybackStart on Video items resets the timer each time the client\n  moves to a new trailer (covers both auto-advance and user pressing Next).\n- OnPlaybackStopped for trailers: waits 2.5 s; if state hasn't advanced\n  (user pressed Back, not Next), timers are cancelled.\n- Movie PlaybackStart cancels any pending trailer timers before the\n  suppression check, preventing stale NextTrack commands mid-movie.",
         "targetAbi": "10.11.0.0",
